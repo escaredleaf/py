@@ -106,20 +106,20 @@ def get_active_stocks() -> list[dict]:
         return [dict(r) for r in rows]
 
 
-def close_stock(name: str):
+def close_stock(code: str):
     with get_conn() as conn:
         conn.execute(
-            "UPDATE tracked_stocks SET status = 'closed' WHERE name = ? AND status = 'active'",
-            (name,)
+            "UPDATE tracked_stocks SET status = 'closed' WHERE code = ? AND status = 'active'",
+            (code,)
         )
         conn.commit()
 
 
-def get_stock_record(name: str) -> dict | None:
+def get_stock_record(code: str) -> dict | None:
     with get_conn() as conn:
         row = conn.execute(
-            "SELECT * FROM tracked_stocks WHERE name = ? ORDER BY id DESC LIMIT 1",
-            (name,)
+            "SELECT * FROM tracked_stocks WHERE code = ? ORDER BY id DESC LIMIT 1",
+            (code,)
         ).fetchone()
         return dict(row) if row else None
 
@@ -226,20 +226,14 @@ def get_candles(code: str, count: int = 80) -> list[dict]:
         return []
 
 
-def find_code_by_name(name: str) -> str | None:
-    """종목명으로 종목코드 검색"""
-    url = (
-        f"https://ac.finance.naver.com/ac"
-        f"?q={quote(name)}&q_enc=UTF-8&t_aid=stock&st=111"
-        f"&r_format=json&r_enc=UTF-8&r_unicode=0&t_koreng=1&r_lt=5"
-    )
+def get_name_by_code(code: str) -> str:
+    """종목코드로 종목명 조회"""
+    url = f"https://m.stock.naver.com/api/stock/{code}/basic"
     try:
-        data = requests.get(url, headers=HEADERS, timeout=8).json()
-        items = data.get("items", [[]])[0]
-        return items[0][1] if items and len(items[0]) > 1 else None
-    except Exception as e:
-        print(f"[collector] find_code_by_name error: {e}")
-        return None
+        d = requests.get(url, headers=HEADERS, timeout=8).json()
+        return d.get("stockName", code)
+    except Exception:
+        return code
 
 
 # ── 매수 점수 계산 ────────────────────────────────────────────────────
@@ -402,12 +396,12 @@ HELP_TEXT = (
     "─────────────────────\n"
     "텍스트로 입력하세요 (/ 없이):\n\n"
     "`추천` - 매수 추천 종목 TOP 5\n"
-    "`매수 종목명 매수가` - 매수 등록 및 모니터링\n"
+    "`매수 종목코드 매수가` - 매수 등록 및 모니터링\n"
     "`상태` - 전체 추적 종목 현황\n"
-    "`상태 종목명` - 특정 종목 상세 현황\n"
-    "`종료 종목명` - 종목 추적 중단\n"
+    "`상태 종목코드` - 특정 종목 상세 현황\n"
+    "`종료 종목코드` - 종목 추적 중단\n"
     "`도움말` - 이 메시지\n\n"
-    "예시: `매수 삼성전자 71200`"
+    "예시: `매수 005930 71200`  (삼성전자)"
 )
 
 
@@ -456,20 +450,20 @@ async def cmd_recommend(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_buy(update: Update, context: ContextTypes.DEFAULT_TYPE):
     args = context.args
     if len(args) < 2:
-        await update.message.reply_text("사용법: 매수 종목명 매수가\n예: 매수 삼성전자 71200")
+        await update.message.reply_text("사용법: 매수 종목코드 매수가\n예: 매수 005930 71200")
         return
-    name = args[0]
+    code = args[0].strip()
     try:
         buy_price = float(args[1].replace(",", ""))
     except ValueError:
         await update.message.reply_text("매수가를 숫자로 입력해주세요.")
         return
 
-    code = find_code_by_name(name) or ""
+    name = get_name_by_code(code)
     add_tracked_stock(name, code, buy_price)
     await update.message.reply_text(
         f"✅ *매수 등록 완료*\n"
-        f"종목: {name}  코드: {code or '조회실패'}\n"
+        f"종목: {name} ({code})\n"
         f"매수가: {buy_price:,.0f}원\n"
         f"15초마다 매도 신호 모니터링 시작",
         parse_mode="Markdown",
@@ -489,16 +483,13 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
         return
 
-    name = args[0]
-    record = get_stock_record(name)
+    code = args[0].strip()
+    record = get_stock_record(code)
     if not record:
-        await update.message.reply_text(f"'{name}' 을(를) 찾을 수 없습니다.")
+        await update.message.reply_text(f"'{code}' 을(를) 찾을 수 없습니다.")
         return
 
-    code = record.get("code")
-    if not code:
-        await update.message.reply_text(f"{name}: 종목코드 없음")
-        return
+    name = record.get("name", code)
 
     info = get_stock_info(code)
     if not info:
@@ -522,10 +513,12 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_close(update: Update, context: ContextTypes.DEFAULT_TYPE):
     args = context.args
     if not args:
-        await update.message.reply_text("사용법: 종료 종목명")
+        await update.message.reply_text("사용법: 종료 종목코드\n예: 종료 005930")
         return
-    close_stock(args[0])
-    await update.message.reply_text(f"🛑 {args[0]} 추적을 종료했습니다.")
+    code = args[0].strip()
+    name = get_name_by_code(code)
+    close_stock(code)
+    await update.message.reply_text(f"🛑 {name} ({code}) 추적을 종료했습니다.")
 
 
 async def message_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
