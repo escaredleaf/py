@@ -1035,6 +1035,41 @@ def _analyze_trend(cur: int, daily: list, buy_price: float, open_price: int) -> 
     return trend
 
 
+async def startup_notify(context: ContextTypes.DEFAULT_TYPE):
+    """봇 시작 시 시작 시각 + GitHub 최종 업데이트 일자 전송"""
+    chat_id = get_setting("chat_id")
+    if not chat_id:
+        return
+
+    start_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    # GitHub raw 파일의 Last-Modified 헤더로 업데이트 일자 확인
+    update_date = "확인 불가"
+    try:
+        res = requests.head(
+            "https://raw.githubusercontent.com/escaredleaf/py/main/run.py",
+            timeout=8,
+        )
+        lm = res.headers.get("Last-Modified", "")
+        if lm:
+            # 예: "Mon, 28 Apr 2026 04:00:00 GMT" → 파싱
+            from email.utils import parsedate_to_datetime
+            dt = parsedate_to_datetime(lm)
+            update_date = dt.strftime("%Y-%m-%d %H:%M UTC")
+    except Exception:
+        pass
+
+    await context.bot.send_message(
+        chat_id=int(chat_id),
+        text=(
+            "🚀 *QuantScalpBot 시작*\n"
+            f"  시작 시각: `{start_time}`\n"
+            f"  최신 업데이트: `{update_date}`"
+        ),
+        parse_mode="Markdown",
+    )
+
+
 async def health_job(context: ContextTypes.DEFAULT_TYPE):
     """5분마다 연동 상태 + 보유 종목 현황 전송"""
     chat_id = get_setting("chat_id")
@@ -1172,6 +1207,7 @@ def main():
     app.job_queue.run_repeating(track_job,          interval=15,   first=15,  job_kwargs=jk)
     app.job_queue.run_repeating(health_job,         interval=300,  first=60,  job_kwargs=jk)
     app.job_queue.run_repeating(auto_recommend_job, interval=1800, first=120, job_kwargs=jk)
+    app.job_queue.run_once(startup_notify, when=3)
 
     print("🚀 QuantScalpBot 가동 중 (Ctrl+C 로 종료)")
     app.run_polling(allowed_updates=["message"])
