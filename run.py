@@ -8,13 +8,20 @@ import sys
 import logging
 import sqlite3
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
+
+KST = timezone(timedelta(hours=9))
+
+def now_kst() -> datetime:
+    return datetime.now(KST)
 from urllib.parse import quote
+
+import asyncio
 
 import requests
 import pandas as pd
 from bs4 import BeautifulSoup
-from telegram import Update
+from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import Application, ContextTypes, CommandHandler, MessageHandler, filters
 
 # ── 설정 ──────────────────────────────────────────────────────────────
@@ -23,6 +30,10 @@ TOKEN = os.environ.get(
     "TELEGRAM_TOKEN",
     "8751027463:AAEt_Xg7nR0AAVJyXYkyUgkt6BXFbC_x28o",
 )
+
+LLM_URL   = "https://api.platform.a15t.com/v1/chat/completions"
+LLM_MODEL = "openai/gpt-5-mini-2025-08-07"
+LLM_KEY   = os.environ.get("LLM_KEY", "sk-gapk-6z3jLdHWOoztTgupT9OgLA3fU-QcKSY1")
 
 DB_PATH = "quant_scalp.db"
 
@@ -38,6 +49,49 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(message)s",
     level=logging.WARNING,
 )
+
+# ── LLM ──────────────────────────────────────────────────────────────
+
+def _llm_call(system: str, user: str, max_tokens: int = 1000) -> str:
+    """동기 LLM 호출 (requests)"""
+    try:
+        res = requests.post(
+            LLM_URL,
+            headers={"Authorization": f"Bearer {LLM_KEY}", "Content-Type": "application/json"},
+            json={
+                "model": LLM_MODEL,
+                "messages": [
+                    {"role": "user", "content": f"{system}\n\n{user}"},
+                ],
+                "max_completion_tokens": max_tokens,
+            },
+            timeout=30,
+        )
+        data = res.json()
+        if "choices" not in data:
+            err = data.get("error", {})
+            msg = err.get("message", str(data))
+            print(f"[LLM] 오류 응답: {msg}")
+            return f"⚠️ LLM 오류\n{msg}"
+        choice = data["choices"][0]
+        content = choice.get("message", {}).get("content") or ""
+        refusal = choice.get("message", {}).get("refusal") or ""
+        if not content and refusal:
+            print(f"[LLM] 거부 응답: {refusal}")
+            return f"⚠️ {refusal}"
+        if not content:
+            print(f"[LLM] 빈 응답. finish_reason={choice.get('finish_reason')} full={data}")
+        return content.strip()
+    except Exception as e:
+        print(f"[LLM] 오류: {e}")
+        return f"⚠️ LLM 오류\n{e}"
+
+
+async def llm(system: str, user: str, max_tokens: int = 1000) -> str:
+    """비동기 래퍼 - 이벤트 루프 블로킹 방지"""
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, _llm_call, system, user, max_tokens)
+
 
 # ── DB ────────────────────────────────────────────────────────────────
 
@@ -93,7 +147,7 @@ def add_tracked_stock(name: str, code: str, buy_price: float):
     with get_conn() as conn:
         conn.execute(
             "INSERT INTO tracked_stocks (name, code, buy_price, buy_time) VALUES (?, ?, ?, ?)",
-            (name, code, buy_price, datetime.now().isoformat())
+            (name, code, buy_price, now_kst().isoformat())
         )
         conn.commit()
 
@@ -158,7 +212,7 @@ def scrape_top_stocks(limit: int = 40) -> list[dict]:
                         continue
 
                     price = int(price_text)
-                    if not (2_000 <= price <= 30_000):
+                    if price < 500:  # 너무 낮은 동전주만 제외
                         continue
 
                     stocks.append({
@@ -195,6 +249,37 @@ def get_stock_info(code: str) -> dict | None:
         return None
 
 
+def is_market_open() -> bool:
+    """한국 주식 장중 여부 (평일 09:00~15:30)"""
+    now = now_kst()
+    if now.weekday() >= 5:
+        return False
+    minutes = now.hour * 60 + now.minute
+    return 9 * 60 <= minutes <= 15 * 60 + 30
+
+
+def _parse_candles(xml_text: str) -> list[dict]:
+    """fchart API XML → 캔들 리스트"""
+    soup = BeautifulSoup(xml_text, "lxml-xml")
+    candles = []
+    for item in soup.select("item"):
+        parts = item.get("data", "").split("|")
+        if len(parts) < 6:
+            continue
+        try:
+            candles.append({
+                "time":   parts[0],
+                "open":   int(parts[1]),
+                "high":   int(parts[2]),
+                "low":    int(parts[3]),
+                "close":  int(parts[4]),
+                "volume": int(parts[5]),
+            })
+        except ValueError:
+            continue
+    return candles
+
+
 def get_candles(code: str, count: int = 80) -> list[dict]:
     """네이버 fchart API로 1분봉 조회"""
     url = (
@@ -203,26 +288,23 @@ def get_candles(code: str, count: int = 80) -> list[dict]:
     )
     try:
         res = requests.get(url, headers=HEADERS, timeout=10)
-        soup = BeautifulSoup(res.text, "lxml-xml")
-        candles = []
-        for item in soup.select("item"):
-            parts = item.get("data", "").split("|")
-            if len(parts) < 6:
-                continue
-            try:
-                candles.append({
-                    "time":   parts[0],
-                    "open":   int(parts[1]),
-                    "high":   int(parts[2]),
-                    "low":    int(parts[3]),
-                    "close":  int(parts[4]),
-                    "volume": int(parts[5]),
-                })
-            except ValueError:
-                continue
-        return candles
+        return _parse_candles(res.text)
     except Exception as e:
         print(f"[collector] get_candles error ({code}): {e}")
+        return []
+
+
+def get_daily_candles(code: str, count: int = 30) -> list[dict]:
+    """네이버 fchart API로 일봉 조회 (장 외 시간용)"""
+    url = (
+        f"https://fchart.stock.naver.com/sise.nhn"
+        f"?symbol={code}&timeframe=day&count={count}&requestType=0"
+    )
+    try:
+        res = requests.get(url, headers=HEADERS, timeout=10)
+        return _parse_candles(res.text)
+    except Exception as e:
+        print(f"[collector] get_daily_candles error ({code}): {e}")
         return []
 
 
@@ -250,12 +332,12 @@ def calculate_buy_score(stock: dict, candles: list) -> dict:
     score = 0
     reasons: list[str] = []
 
-    if len(candles) < 15:
+    if len(candles) < 10:
         return {"score": 0, "reasons": ["데이터 부족"]}
 
     price = stock.get("price", 0)
-    if not (2_000 <= price <= 30_000):
-        return {"score": 0, "reasons": ["가격 범위 제외"]}
+    if price < 500:
+        return {"score": 0, "reasons": ["동전주 제외"]}
 
     df = pd.DataFrame(candles)
 
@@ -312,6 +394,55 @@ def calculate_buy_score(stock: dict, candles: list) -> dict:
 
 
 # ── 매도 점수 계산 ────────────────────────────────────────────────────
+
+def calculate_new_score(stock: dict, candles: list) -> dict:
+    """
+    신규 모멘텀 점수 (0~100) - 방금 막 움직이기 시작한 종목 탐색
+      1. 직전까지 거래량 평탄 → 최근 3봉 폭발 (35점)
+      2. 최근 3봉 연속 양봉    (35점)
+      3. 등락률 0.5~5% 초기 구간 (30점)
+    """
+    score = 0
+    reasons: list[str] = []
+
+    if len(candles) < 10:
+        return {"score": 0, "reasons": ["데이터 부족"]}
+
+    price = stock.get("price", 0)
+    if price < 500:
+        return {"score": 0, "reasons": ["동전주 제외"]}
+
+    df = pd.DataFrame(candles)
+
+    # 1. 직전 평탄 → 최근 폭발 (신규성 핵심)
+    flat_vol  = df["volume"].iloc[-20:-3].mean()
+    burst_vol = df["volume"].iloc[-3:].mean()
+    if flat_vol > 0:
+        ratio = burst_vol / flat_vol
+        if ratio >= 5.0:
+            score += 35; reasons.append(f"거래량 {ratio:.0f}배 폭발 신규")
+        elif ratio >= 3.0:
+            score += 20; reasons.append(f"거래량 {ratio:.0f}배 급등 신규")
+        elif ratio >= 2.0:
+            score += 10
+
+    # 2. 최근 3봉 연속 양봉 (시작 신호)
+    if len(df) >= 3:
+        last3 = df.iloc[-3:]
+        if all(last3["close"].values[i] > last3["open"].values[i] for i in range(3)):
+            score += 35; reasons.append("3봉 연속 양봉")
+        elif last3["close"].iloc[-1] > last3["open"].iloc[-1]:
+            score += 15
+
+    # 3. 등락률 초기 구간 0.5~5% (과열 전)
+    rate = stock.get("change_rate", 0)
+    if 0.5 <= rate <= 5.0:
+        score += 30; reasons.append(f"초기 상승 +{rate:.1f}%")
+    elif rate > 5.0:
+        score -= 10; reasons.append("이미 급등")
+
+    return {"score": min(100, max(0, score)), "reasons": reasons}
+
 
 def _vwap(candles: list) -> float:
     tv  = sum(c["close"] * c["volume"] for c in candles)
@@ -389,50 +520,72 @@ def calculate_sell_score(stock_info: dict, candles: list, buy_price: float) -> d
     }
 
 
-# ── 텔레그램 명령어 ───────────────────────────────────────────────────
+# ── 텔레그램 UI ───────────────────────────────────────────────────────
+
+# 인자가 필요한 명령어 대기 상태 (chat_id → action)
+_pending: dict[str, str] = {}
+
+MAIN_KEYBOARD = ReplyKeyboardMarkup(
+    [
+        [KeyboardButton("추천"),     KeyboardButton("매수")],
+        [KeyboardButton("상태"),     KeyboardButton("종목분석")],
+        [KeyboardButton("종료"),     KeyboardButton("도움말")],
+    ],
+    resize_keyboard=True,
+)
 
 HELP_TEXT = (
     "📈 *QuantScalpBot* 명령어\n"
     "─────────────────────\n"
     "텍스트로 입력하세요 (/ 없이):\n\n"
-    "`추천` - 매수 추천 종목 TOP 5\n"
+    "`추천` - 모멘텀 강한 종목 + 신규 모멘텀 종목 TOP 5\n"
     "`매수 종목코드 매수가` - 매수 등록 및 모니터링\n"
     "`상태` - 전체 추적 종목 현황\n"
     "`상태 종목코드` - 특정 종목 상세 현황\n"
     "`종료 종목코드` - 종목 추적 중단\n"
+    "`종목분석 종목명또는코드` - IB 스타일 심층 분석\n"
     "`도움말` - 이 메시지\n\n"
-    "예시: `매수 005930 71200`  (삼성전자)"
+    "예시: `매수 005930 71200`  (삼성전자)\n"
+    "예시: `종목분석 삼성전자`"
 )
 
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     set_setting("chat_id", str(update.effective_chat.id))
     await update.message.reply_text(
-        f"✅ QuantScalpBot 시작!\n\n{HELP_TEXT}", parse_mode="Markdown"
+        "✅ *QuantScalpBot 시작!*\n아래 버튼을 눌러 사용하세요.",
+        parse_mode="Markdown",
+        reply_markup=MAIN_KEYBOARD,
     )
 
 
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(HELP_TEXT, parse_mode="Markdown")
+    await update.message.reply_text(
+        HELP_TEXT, parse_mode="Markdown", reply_markup=MAIN_KEYBOARD
+    )
 
 
 async def cmd_recommend(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("📊 종목 스캔 중... (20~30초 소요)")
+    market_open = is_market_open()
+    label_time  = "장중" if market_open else "장 외(전일 일봉 기준)"
+    await update.message.reply_text(f"📊 종목 스캔 중... [{label_time}]")
     try:
+        threshold = 80 if market_open else 55
         results = []
         for stock in scrape_top_stocks(limit=40):
             code = stock.get("code")
             if not code:
                 continue
-            sd = calculate_buy_score(stock, get_candles(code, count=80))
-            if sd["score"] >= 80:
+            candles = get_candles(code, count=80) if market_open else get_daily_candles(code, count=30)
+            sd = calculate_buy_score(stock, candles)
+            if sd["score"] >= threshold:
                 results.append({**stock, **sd})
 
         results.sort(key=lambda x: x["score"], reverse=True)
         top5 = results[:5]
 
         if not top5:
-            await update.message.reply_text("⚠️ 현재 조건(80점↑)을 만족하는 종목이 없습니다.")
+            await update.message.reply_text(f"⚠️ 현재 조건({threshold}점↑)을 만족하는 종목이 없습니다.")
             return
 
         lines = ["🔥 *매수 추천 TOP 5*\n" + "─" * 22]
@@ -443,6 +596,20 @@ async def cmd_recommend(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"   점수 {s['score']}점 | {', '.join(s['reasons'])}"
             )
         await update.message.reply_text("\n\n".join(lines), parse_mode="Markdown")
+
+        # LLM 종합 분석
+        stock_summary = "\n".join(
+            f"- {s['name']}({s['market']}): 현재가 {s['price']:,}원, "
+            f"등락 {s['change_rate']:+.1f}%, 사유: {', '.join(s['reasons'])}"
+            for s in top5
+        )
+        commentary = await llm(
+            "당신은 한국 주식 단타 전문가입니다. 간결하고 핵심만 답하세요.",
+            f"다음 종목들이 단타 추천됐습니다. 시장 맥락과 주의사항을 2~3문장으로 분석해주세요:\n{stock_summary}",
+            max_tokens=800,
+        )
+        if commentary:
+            await update.message.reply_text(f"🤖 *AI 분석*\n{commentary}", parse_mode="Markdown")
     except Exception as e:
         await update.message.reply_text(f"오류: {e}")
 
@@ -470,16 +637,91 @@ async def cmd_buy(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+async def _build_portfolio_lines(active: list) -> list[str]:
+    """보유 종목별 상세 현황 라인 생성 (health_job / cmd_status 공용)"""
+    lines = []
+    stock_lines_for_llm = []
+
+    for stock in active:
+        code      = stock.get("code", "")
+        buy_price = stock["buy_price"]
+        try:
+            info  = get_stock_info(code)
+            daily = get_daily_candles(code, count=25)
+            if not info:
+                raise ValueError("가격 조회 실패")
+
+            cur       = info["price"]
+            gap       = (cur - buy_price) / buy_price * 100
+            gap_emoji = "📈" if gap >= 0 else "📉"
+            trend     = _analyze_trend(cur, daily, buy_price, info.get("open", 0))
+
+            chg5 = chg10 = ""
+            if len(daily) >= 10:
+                closes = [c["close"] for c in daily]
+                chg5  = f"{(closes[-1]-closes[-5])/closes[-5]*100:+.1f}%"
+                chg10 = f"{(closes[-1]-closes[-min(10,len(closes))])/closes[-min(10,len(closes))]*100:+.1f}%"
+
+            expert_prompt = (
+                f"종목: {stock['name']} ({code})\n"
+                f"매수가: {buy_price:,}원 / 현재가: {cur:,}원 / 수익률: {gap:+.2f}%\n"
+                f"추이: {trend}\n"
+                f"5일변화: {chg5}  10일변화: {chg10}\n\n"
+                "위 데이터와 최신 시장 상황·뉴스를 종합해 "
+                "추가매수·보유·매도 중 하나를 명확히 제시하고 "
+                "핵심 사유를 2줄 이내로 설명하세요. "
+                "첫 줄: 판단(이모지 포함), 둘째 줄: 사유."
+            )
+            print(f"[LLM] {stock['name']} 호출 시작")
+            opinion = _llm_call(
+                "당신은 한국 주식 단타 전문가입니다. 간결·명확하게 답하세요.",
+                expert_prompt,
+                800,
+            )
+            print(f"[LLM] {stock['name']} 결과: {repr(opinion[:80]) if opinion else repr(opinion)}")
+
+            lines.append(
+                f"\n*{stock['name']}* ({code})\n"
+                f"  매수가: {buy_price:,.0f}원\n"
+                f"  현재가: {cur:,.0f}원\n"
+                f"  {gap_emoji} 갭: {gap:+.2f}%\n"
+                f"  추이: {trend}\n"
+                f"  💬 {opinion or '분석 불가'}"
+            )
+            stock_lines_for_llm.append(
+                f"{stock['name']}: 매수가 {buy_price:,.0f}원, "
+                f"현재가 {cur:,.0f}원, 수익률 {gap:+.2f}%"
+            )
+        except Exception as e:
+            print(f"[포트폴리오] {stock['name']} 예외: {type(e).__name__}: {e}")
+            lines.append(f"\n*{stock['name']}* ({code}): 조회 실패")
+
+    # AI 시황 요약 (장중에만)
+    now_h = now_kst().hour * 60 + now_kst().minute
+    if stock_lines_for_llm and 9 * 60 + 5 <= now_h <= 15 * 60 + 25:
+        commentary = await llm(
+            "당신은 한국 주식 단타 전문가입니다. 간결하게 핵심만 답하세요.",
+            "보유 종목 현황입니다. 지금 장 분위기와 대응 방향을 2문장으로 조언해주세요:\n"
+            + "\n".join(stock_lines_for_llm),
+            max_tokens=800,
+        )
+        if commentary:
+            lines.append(f"\n🤖 *AI 시황*\n{commentary}")
+
+    return lines
+
+
 async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     args = context.args
     if not args:
-        stocks = get_active_stocks()
-        if not stocks:
+        active = get_active_stocks()
+        if not active:
             await update.message.reply_text("현재 추적 중인 종목이 없습니다.")
             return
-        lines = ["📋 *추적 중인 종목*\n" + "─" * 20]
-        for s in stocks:
-            lines.append(f"• {s['name']}  매수가 {s['buy_price']:,.0f}원")
+        now = now_kst().strftime("%H:%M:%S")
+        await update.message.reply_text(f"📋 *보유 종목 현황* `{now}` 조회 중...", parse_mode="Markdown")
+        lines = [f"📋 *보유 종목 현황* `{now}`"]
+        lines += await _build_portfolio_lines(active)
         await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
         return
 
@@ -490,7 +732,6 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     name = record.get("name", code)
-
     info = get_stock_info(code)
     if not info:
         await update.message.reply_text(f"{name}: 현재가 조회 실패")
@@ -510,6 +751,92 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+def resolve_stock(query: str) -> tuple[str, str]:
+    """종목명 또는 코드 → (name, code) 반환"""
+    query = query.strip()
+    if query.isdigit() and len(query) == 6:
+        return get_name_by_code(query), query
+    # 이름으로 검색
+    url = (
+        f"https://ac.finance.naver.com/ac"
+        f"?q={quote(query)}&q_enc=UTF-8&t_aid=stock&st=111"
+        f"&r_format=json&r_enc=UTF-8&r_unicode=0&t_koreng=1&r_lt=5"
+    )
+    try:
+        data  = requests.get(url, headers=HEADERS, timeout=8).json()
+        items = data.get("items", [[]])[0]
+        if items and len(items[0]) > 1:
+            return items[0][0], items[0][1]
+    except Exception:
+        pass
+    return query, ""
+
+
+async def cmd_stock_analysis(update: Update, query: str):
+    """IB 스타일 종목 심층 분석"""
+    await update.message.reply_text(f"🔬 *{query}* 분석 중... (30~60초 소요)", parse_mode="Markdown")
+
+    name, code = resolve_stock(query)
+
+    # 기초 데이터 수집
+    info   = get_stock_info(code) if code else None
+    daily  = get_daily_candles(code, count=60) if code else []
+
+    data_block = f"종목명: {name}"
+    if code:
+        data_block += f" (코드: {code})"
+    if info:
+        data_block += (
+            f"\n현재가: {info['price']:,}원"
+            f"\n시가: {info['open']:,}원  고가: {info['high']:,}원  저가: {info['low']:,}원"
+            f"\n누적거래량: {info['volume']:,}"
+        )
+    if len(daily) >= 20:
+        closes  = [c["close"] for c in daily]
+        ma5     = sum(closes[-5:]) / 5
+        ma20    = sum(closes[-20:]) / 20
+        chg1m   = (closes[-1] - closes[-20]) / closes[-20] * 100
+        chg3m   = (closes[-1] - closes[0])   / closes[0]   * 100
+        data_block += (
+            f"\nMA5: {ma5:,.0f}원  MA20: {ma20:,.0f}원"
+            f"\n1개월 변화율: {chg1m:+.1f}%  3개월 변화율: {chg3m:+.1f}%"
+            f"\n52주 고가: {max(c['high'] for c in daily):,}원"
+            f"  52주 저가: {min(c['low'] for c in daily):,}원"
+        )
+
+    system_prompt = (
+        "당신은 투자은행(IB) 애널리스트입니다. "
+        "제공된 데이터와 당신의 지식을 바탕으로 IB 스타일의 심층 분석을 수행합니다. "
+        "마크다운 없이 plain-text로 작성하고, 표(테이블) 형식은 사용하지 마세요. "
+        "한국어로 답변하세요."
+    )
+
+    user_prompt = f"""다음 종목을 IB 스타일로 분석해주세요.
+
+[제공 데이터]
+{data_block}
+
+[분석 순서 - 반드시 이 순서로]
+1. 내러티브 (시장이 현재 가격에 반영한 스토리)
+2. Reverse DCF (현재 주가가 암시하는 성장률/마진 역산)
+3. Forward DCF (합리적 가정 기반 적정가 추정)
+4. 트레이딩 컴프 (주요 밸류에이션 멀티플 해석)
+5. 리스크 요인 (Deal Radar: M&A, 규제, 경쟁 등)
+6. So What (매수/보유/매도 판단 및 근거)
+
+데이터가 부족한 항목은 [추정] 또는 [데이터 없음]으로 명시하세요."""
+
+    result = await llm(system_prompt, user_prompt, max_tokens=3000)
+
+    if not result:
+        await update.message.reply_text("분석 실패: LLM 응답 없음")
+        return
+
+    # 텔레그램 4096자 제한 분할 전송
+    for i in range(0, len(result), 4000):
+        await update.message.reply_text(result[i:i+4000])
+
+
 async def cmd_close(update: Update, context: ContextTypes.DEFAULT_TYPE):
     args = context.args
     if not args:
@@ -522,26 +849,179 @@ async def cmd_close(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def message_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """한글 텍스트 메시지를 명령어로 라우팅"""
-    text = update.message.text.strip()
-    parts = text.split()
+    """버튼/텍스트 명령어 라우팅 + 다단계 입력 상태 처리"""
+    text    = update.message.text.strip()
+    parts   = text.split()
     keyword = parts[0] if parts else ""
+    cid     = str(update.effective_chat.id)
 
+    # ── 다단계 입력 대기 중인 경우 ──
+    pending = _pending.pop(cid, None)
+    if pending == "buy":
+        context.args = parts
+        await cmd_buy(update, context)
+        return
+    if pending == "close":
+        context.args = parts
+        await cmd_close(update, context)
+        return
+    if pending == "stock_analysis":
+        await cmd_stock_analysis(update, text)
+        return
+
+    # ── 일반 라우팅 ──
     if keyword == "추천":
         await cmd_recommend(update, context)
+        await cmd_new_recommend(update, context)
+    elif keyword == "신규추천":
+        await cmd_new_recommend(update, context)
     elif keyword == "매수":
-        context.args = parts[1:]
-        await cmd_buy(update, context)
+        if len(parts) >= 3:
+            context.args = parts[1:]
+            await cmd_buy(update, context)
+        else:
+            _pending[cid] = "buy"
+            await update.message.reply_text(
+                "📌 매수할 *종목코드*와 *매수가*를 입력하세요.\n예: `005930 71200`",
+                parse_mode="Markdown",
+            )
     elif keyword == "상태":
-        context.args = parts[1:]
+        if len(parts) >= 2:
+            context.args = parts[1:]
+        else:
+            context.args = []
         await cmd_status(update, context)
     elif keyword == "종료":
-        context.args = parts[1:]
-        await cmd_close(update, context)
+        if len(parts) >= 2:
+            context.args = parts[1:]
+            await cmd_close(update, context)
+        else:
+            active = get_active_stocks()
+            if not active:
+                await update.message.reply_text("추적 중인 종목이 없습니다.")
+            else:
+                _pending[cid] = "close"
+                stock_list = "\n".join(f"• {s['name']} ({s['code']})" for s in active)
+                await update.message.reply_text(
+                    f"추적 중단할 *종목코드*를 입력하세요:\n{stock_list}",
+                    parse_mode="Markdown",
+                )
+    elif keyword == "종목분석":
+        if len(parts) >= 2:
+            await cmd_stock_analysis(update, " ".join(parts[1:]))
+        else:
+            _pending[cid] = "stock_analysis"
+            await update.message.reply_text(
+                "🔬 분석할 *종목명 또는 종목코드*를 입력하세요.\n예: `삼성전자` 또는 `005930`",
+                parse_mode="Markdown",
+            )
     elif keyword == "도움말":
         await cmd_help(update, context)
     else:
-        await update.message.reply_text(HELP_TEXT, parse_mode="Markdown")
+        await update.message.reply_text(
+            HELP_TEXT, parse_mode="Markdown", reply_markup=MAIN_KEYBOARD
+        )
+
+
+async def cmd_new_recommend(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    market_open = is_market_open()
+    label_time  = "장중" if market_open else "장 외(전일 일봉 기준)"
+    await update.message.reply_text(f"🆕 신규 모멘텀 종목 스캔 중... [{label_time}]")
+    try:
+        threshold = 70 if market_open else 50
+        results = []
+        for stock in scrape_top_stocks(limit=40):
+            code = stock.get("code")
+            if not code:
+                continue
+            candles = get_candles(code, count=80) if market_open else get_daily_candles(code, count=30)
+            sd = calculate_new_score(stock, candles)
+            if sd["score"] >= threshold:
+                results.append({**stock, **sd})
+
+        results.sort(key=lambda x: x["score"], reverse=True)
+        top5 = results[:5]
+
+        if not top5:
+            await update.message.reply_text("⚠️ 현재 신규 모멘텀 종목이 없습니다.")
+            return
+
+        lines = ["🆕 *신규 모멘텀 TOP 5*\n" + "─" * 22]
+        for i, s in enumerate(top5, 1):
+            lines.append(
+                f"{i}. *{s['name']}* ({s['market']})\n"
+                f"   현재가 {s['price']:,}원  등락 {s['change_rate']:+.1f}%\n"
+                f"   점수 {s['score']}점 | {', '.join(s['reasons'])}"
+            )
+        await update.message.reply_text("\n\n".join(lines), parse_mode="Markdown")
+
+        # LLM 신규 모멘텀 해설
+        stock_summary = "\n".join(
+            f"- {s['name']}: 현재가 {s['price']:,}원, 등락 {s['change_rate']:+.1f}%, "
+            f"신호: {', '.join(s['reasons'])}"
+            for s in top5
+        )
+        commentary = await llm(
+            "당신은 한국 주식 단타 전문가입니다. 간결하고 핵심만 답하세요.",
+            f"방금 모멘텀이 시작된 종목들입니다. 진입 시 유의사항을 2~3문장으로 설명해주세요:\n{stock_summary}",
+            max_tokens=800,
+        )
+        if commentary:
+            await update.message.reply_text(f"🤖 *AI 분석*\n{commentary}", parse_mode="Markdown")
+    except Exception as e:
+        await update.message.reply_text(f"오류: {e}")
+
+
+async def _send_recommend(bot, chat_id: str, label: str):
+    """추천 결과를 공통으로 전송 (자동 추천 job용)"""
+    market_open = is_market_open()
+    threshold   = 70 if market_open else 50
+    results = []
+    for stock in scrape_top_stocks(limit=40):
+        code = stock.get("code")
+        if not code:
+            continue
+        candles = get_candles(code, count=80) if market_open else get_daily_candles(code, count=30)
+        sd = calculate_new_score(stock, candles)
+        if sd["score"] >= threshold:
+            results.append({**stock, **sd})
+
+    results.sort(key=lambda x: x["score"], reverse=True)
+    top5 = results[:5]
+
+    if not top5:
+        return
+
+    lines = [f"🤖 *{label}*\n" + "─" * 22]
+    for i, s in enumerate(top5, 1):
+        lines.append(
+            f"{i}. *{s['name']}* ({s['market']})\n"
+            f"   현재가 {s['price']:,}원  등락 {s['change_rate']:+.1f}%\n"
+            f"   점수 {s['score']}점 | {', '.join(s['reasons'])}"
+        )
+    await bot.send_message(
+        chat_id=int(chat_id),
+        text="\n\n".join(lines),
+        parse_mode="Markdown",
+    )
+
+
+async def auto_recommend_job(context: ContextTypes.DEFAULT_TYPE):
+    """30분마다 장중 자동 신규 종목 추천"""
+    chat_id = get_setting("chat_id")
+    if not chat_id:
+        return
+
+    # 장중 시간만 실행 (KST 09:05 ~ 15:25)
+    now = now_kst()
+    if not (9 * 60 + 5 <= now.hour * 60 + now.minute <= 15 * 60 + 25):
+        return
+
+    try:
+        label = f"자동 신규추천 {now.strftime('%H:%M')}"
+        await _send_recommend(context.bot, chat_id, label)
+    except Exception as e:
+        print(f"[auto_recommend_job] 오류: {e}")
 
 
 # ── 주기 작업 (15초) ──────────────────────────────────────────────────
@@ -561,17 +1041,155 @@ async def track_job(context: ContextTypes.DEFAULT_TYPE):
                 continue
             sd = calculate_sell_score(info, get_candles(code, count=80), stock["buy_price"])
             if sd["score"] >= 60:
+                commentary = await llm(
+                    "당신은 한국 주식 단타 전문가입니다. 한 문장으로 핵심만 답하세요.",
+                    f"{stock['name']} 매도 신호: {', '.join(sd['reasons'])}. "
+                    f"수익률 {sd['pnl']:+.2f}%. 지금 매도해야 할까요?",
+                    max_tokens=800,
+                )
+                text = (
+                    f"⚠️ *매도 신호* {stock['name']}  (점수: {sd['score']})\n"
+                    f"현재가: {info['price']:,.0f}원  수익률: {sd['pnl']:+.2f}%\n"
+                    f"사유: {', '.join(sd['reasons'])}"
+                )
+                if commentary:
+                    text += f"\n🤖 {commentary}"
                 await context.bot.send_message(
-                    chat_id=int(chat_id),
-                    text=(
-                        f"⚠️ *매도 신호* {stock['name']}  (점수: {sd['score']})\n"
-                        f"현재가: {info['price']:,.0f}원  수익률: {sd['pnl']:+.2f}%\n"
-                        f"사유: {', '.join(sd['reasons'])}"
-                    ),
-                    parse_mode="Markdown",
+                    chat_id=int(chat_id), text=text, parse_mode="Markdown"
                 )
         except Exception as e:
             print(f"[track_job] {stock['name']} 오류: {e}")
+
+
+def _analyze_trend(cur: int, daily: list, buy_price: float, open_price: int) -> str:
+    """
+    일봉 데이터 기반 추이 분석
+    - MA5 / MA20 방향 (골든/데드크로스)
+    - 5일 / 10일 변화율
+    - 장중이면 당일 시가 대비 흐름도 추가
+    """
+    if len(daily) < 5:
+        # 일봉 부족 → 매수가 대비만 표시
+        base  = open_price if open_price > 0 else buy_price
+        label = "시가" if open_price > 0 else "매수가"
+        diff  = (cur - base) / base * 100
+        arrow = "↑" if diff > 0.3 else ("↓" if diff < -0.3 else "→")
+        return f"{arrow} {label} 대비 {diff:+.1f}%"
+
+    closes = [c["close"] for c in daily]
+
+    # MA5 / MA20
+    ma5  = sum(closes[-5:]) / 5
+    ma20 = sum(closes[-min(20, len(closes)):]) / min(20, len(closes))
+
+    # 기간 변화율
+    chg5  = (closes[-1] - closes[-5])  / closes[-5]  * 100
+    chg10 = (closes[-1] - closes[-min(10, len(closes))]) / closes[-min(10, len(closes))] * 100
+
+    # 방향 판단
+    if ma5 > ma20 and chg5 > 0:
+        cross = "골든크로스"
+        arrow = "↑"
+    elif ma5 < ma20 and chg5 < 0:
+        cross = "데드크로스"
+        arrow = "↓"
+    else:
+        cross = "혼조"
+        arrow = "→"
+
+    trend = f"{arrow} {cross} | 5일 {chg5:+.1f}% / 10일 {chg10:+.1f}%"
+
+    # 장중이면 당일 흐름 추가
+    if open_price > 0:
+        intraday = (cur - open_price) / open_price * 100
+        trend += f" | 당일 {intraday:+.1f}%"
+
+    return trend
+
+
+async def startup_notify(context: ContextTypes.DEFAULT_TYPE):
+    """봇 시작 시 시작 시각 + GitHub 최종 업데이트 일자 전송"""
+    chat_id = get_setting("chat_id")
+    if not chat_id:
+        return
+
+    start_time = now_kst().strftime("%Y-%m-%d %H:%M:%S")
+
+    # GitHub raw 파일의 Last-Modified 헤더로 업데이트 일자 확인
+    update_date = "확인 불가"
+    try:
+        res = requests.head(
+            "https://raw.githubusercontent.com/escaredleaf/py/main/run.py",
+            timeout=8,
+        )
+        lm = res.headers.get("Last-Modified", "")
+        if lm:
+            # 예: "Mon, 28 Apr 2026 04:00:00 GMT" → 파싱
+            from email.utils import parsedate_to_datetime
+            dt = parsedate_to_datetime(lm)
+            update_date = dt.astimezone(KST).strftime("%Y-%m-%d %H:%M KST")
+    except Exception:
+        pass
+
+    await context.bot.send_message(
+        chat_id=int(chat_id),
+        text=(
+            "🚀 *QuantScalpBot 시작*\n"
+            f"  시작 시각: `{start_time}`\n"
+            f"  최신 업데이트: `{update_date}`"
+        ),
+        parse_mode="Markdown",
+    )
+
+
+async def health_job(context: ContextTypes.DEFAULT_TYPE):
+    """5분마다 연동 상태 + 보유 종목 현황 전송"""
+    chat_id = get_setting("chat_id")
+    if not chat_id:
+        return
+
+    # ── 연동 상태 체크 ──
+    results = {}
+    try:
+        res = requests.get(
+            "https://finance.naver.com/sise/sise_quant.nhn?sosok=0",
+            headers=HEADERS, timeout=8
+        )
+        results["네이버 금융"] = "✅" if res.status_code == 200 else f"❌ {res.status_code}"
+    except Exception:
+        results["네이버 금융"] = "❌ 연결 실패"
+
+    try:
+        res = requests.get(
+            "https://m.stock.naver.com/api/stock/005930/basic",
+            headers=HEADERS, timeout=8
+        )
+        results["네이버 API"] = "✅" if res.status_code == 200 else f"❌ {res.status_code}"
+    except Exception:
+        results["네이버 API"] = "❌ 연결 실패"
+
+    try:
+        active = get_active_stocks()
+        results["DB"] = "✅"
+    except Exception:
+        results["DB"] = "❌ 오류"
+        active = []
+
+    now = now_kst().strftime("%H:%M:%S")
+    lines = [f"🔍 *헬스체크* `{now}`"]
+    for k, v in results.items():
+        lines.append(f"• {k}: {v}")
+
+    # ── 보유 종목 현황 ──
+    if active:
+        lines.append("\n📋 *보유 종목 현황*")
+        lines += await _build_portfolio_lines(active)
+
+    await context.bot.send_message(
+        chat_id=int(chat_id),
+        text="\n".join(lines),
+        parse_mode="Markdown",
+    )
 
 
 # ── 진입점 ────────────────────────────────────────────────────────────
@@ -586,7 +1204,11 @@ def main():
     # 한글 명령어는 텍스트 메시지로 처리 (텔레그램은 영문 명령어만 허용)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_router))
 
-    app.job_queue.run_repeating(track_job, interval=15, first=15)
+    jk = {"misfire_grace_time": 30}  # 30초 이내 지연은 경고 없이 실행
+    app.job_queue.run_repeating(track_job,          interval=15,   first=15,  job_kwargs=jk)
+    app.job_queue.run_repeating(health_job,         interval=300,  first=60,  job_kwargs=jk)
+    app.job_queue.run_repeating(auto_recommend_job, interval=1800, first=120, job_kwargs=jk)
+    app.job_queue.run_once(startup_notify, when=3)
 
     print("🚀 QuantScalpBot 가동 중 (Ctrl+C 로 종료)")
     app.run_polling(allowed_updates=["message"])
