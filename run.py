@@ -308,14 +308,34 @@ def get_daily_candles(code: str, count: int = 30) -> list[dict]:
         return []
 
 
-def get_name_by_code(code: str) -> str:
-    """종목코드로 종목명 조회"""
+def normalize_stock_code(code: str) -> str | None:
+    """6자리 숫자 종목코드만 허용"""
+    code = code.strip()
+    return code if code.isdigit() and len(code) == 6 else None
+
+
+def lookup_stock_by_code(code: str) -> dict | None:
+    """종목코드 유효성 확인 후 종목명 반환"""
+    code = normalize_stock_code(code)
+    if not code:
+        return None
+
     url = f"https://m.stock.naver.com/api/stock/{code}/basic"
     try:
         d = requests.get(url, headers=HEADERS, timeout=8).json()
-        return d.get("stockName", code)
-    except Exception:
-        return code
+        name = (d.get("stockName") or "").strip()
+        if not name or name == code:
+            return None
+        return {"code": code, "name": name}
+    except Exception as e:
+        print(f"[collector] lookup_stock_by_code error ({code}): {e}")
+        return None
+
+
+def get_name_by_code(code: str) -> str:
+    """종목코드로 종목명 조회"""
+    stock = lookup_stock_by_code(code)
+    return stock["name"] if stock else code
 
 
 # ── 매수 점수 계산 ────────────────────────────────────────────────────
@@ -522,30 +542,36 @@ def calculate_sell_score(stock_info: dict, candles: list, buy_price: float) -> d
 
 # ── 텔레그램 UI ───────────────────────────────────────────────────────
 
-# 인자가 필요한 명령어 대기 상태 (chat_id → action)
-_pending: dict[str, str] = {}
+# 인자가 필요한 명령어 대기 상태 (chat_id -> {"action": ..., ...})
+_pending: dict[str, dict] = {}
 
 MAIN_KEYBOARD = ReplyKeyboardMarkup(
     [
-        [KeyboardButton("추천"),     KeyboardButton("매수")],
-        [KeyboardButton("상태"),     KeyboardButton("종목분석")],
+        [KeyboardButton("AI추천"),   KeyboardButton("종목등록")],
+        [KeyboardButton("현재상황"), KeyboardButton("종목분석")],
         [KeyboardButton("종료"),     KeyboardButton("도움말")],
     ],
     resize_keyboard=True,
+)
+
+CONFIRM_KEYBOARD = ReplyKeyboardMarkup(
+    [[KeyboardButton("등록확인"), KeyboardButton("취소")]],
+    resize_keyboard=True,
+    one_time_keyboard=True,
 )
 
 HELP_TEXT = (
     "📈 *QuantScalpBot* 명령어\n"
     "─────────────────────\n"
     "텍스트로 입력하세요 (/ 없이):\n\n"
-    "`추천` - 모멘텀 강한 종목 + 신규 모멘텀 종목 TOP 5\n"
-    "`매수 종목코드 매수가` - 매수 등록 및 모니터링\n"
-    "`상태` - 전체 추적 종목 현황\n"
-    "`상태 종목코드` - 특정 종목 상세 현황\n"
+    "`AI추천` - 모멘텀 강한 종목 + 신규 모멘텀 종목 TOP 5\n"
+    "`종목등록` - 종목코드와 매수금액을 단계별 입력 후 등록\n"
+    "`현재상황` - 전체 추적 종목 현황\n"
+    "`현재상황 종목코드` - 특정 종목 상세 현황\n"
     "`종료 종목코드` - 종목 추적 중단\n"
     "`종목분석 종목명또는코드` - IB 스타일 심층 분석\n"
     "`도움말` - 이 메시지\n\n"
-    "예시: `매수 005930 71200`  (삼성전자)\n"
+    "예시: `종목등록 005930 71200`  (삼성전자)\n"
     "예시: `종목분석 삼성전자`"
 )
 
@@ -617,16 +643,74 @@ async def cmd_recommend(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_buy(update: Update, context: ContextTypes.DEFAULT_TYPE):
     args = context.args
     if len(args) < 2:
-        await update.message.reply_text("사용법: 매수 종목코드 매수가\n예: 매수 005930 71200")
+        await start_stock_registration(update)
         return
-    code = args[0].strip()
+
+    stock = lookup_stock_by_code(args[0])
+    if not stock:
+        await update.message.reply_text(
+            "❌ 유효한 종목코드를 찾을 수 없어 입력 내용을 삭제했습니다.\n"
+            "`종목등록`을 다시 눌러 6자리 종목코드를 입력해주세요.",
+            parse_mode="Markdown",
+            reply_markup=MAIN_KEYBOARD,
+        )
+        return
+
     try:
         buy_price = float(args[1].replace(",", ""))
     except ValueError:
         await update.message.reply_text("매수가를 숫자로 입력해주세요.")
         return
+    if buy_price <= 0:
+        await update.message.reply_text("매수금액은 0보다 큰 숫자로 입력해주세요.")
+        return
 
-    name = get_name_by_code(code)
+    await ask_stock_registration_confirm(
+        update,
+        str(update.effective_chat.id),
+        stock["code"],
+        stock["name"],
+        buy_price,
+    )
+
+
+async def start_stock_registration(update: Update):
+    cid = str(update.effective_chat.id)
+    _pending[cid] = {"action": "buy_code"}
+    await update.message.reply_text(
+        "📌 등록할 *종목코드*를 입력하세요.\n예: `005930`",
+        parse_mode="Markdown",
+    )
+
+
+async def ask_stock_registration_confirm(
+    update: Update,
+    cid: str,
+    code: str,
+    name: str,
+    buy_price: float,
+):
+    _pending[cid] = {
+        "action": "buy_confirm",
+        "code": code,
+        "name": name,
+        "buy_price": buy_price,
+    }
+    await update.message.reply_text(
+        "✅ 종목코드가 확인되었습니다.\n\n"
+        f"종목명: *{name}*\n"
+        f"종목코드: `{code}`\n"
+        f"매수금액: `{buy_price:,.0f}원`\n\n"
+        "위 내용으로 등록할까요?",
+        parse_mode="Markdown",
+        reply_markup=CONFIRM_KEYBOARD,
+    )
+
+
+async def complete_stock_registration(update: Update, pending: dict):
+    code = pending["code"]
+    name = pending["name"]
+    buy_price = pending["buy_price"]
     add_tracked_stock(name, code, buy_price)
     await update.message.reply_text(
         f"✅ *매수 등록 완료*\n"
@@ -634,7 +718,77 @@ async def cmd_buy(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"매수가: {buy_price:,.0f}원\n"
         f"15초마다 매도 신호 모니터링 시작",
         parse_mode="Markdown",
+        reply_markup=MAIN_KEYBOARD,
     )
+
+
+async def handle_pending_stock_registration(
+    update: Update,
+    text: str,
+    parts: list[str],
+    pending: dict,
+):
+    cid = str(update.effective_chat.id)
+    action = pending.get("action")
+
+    if action == "buy_code":
+        stock = lookup_stock_by_code(text)
+        if not stock:
+            _pending.pop(cid, None)
+            await update.message.reply_text(
+                "❌ 유효한 종목코드 또는 종목명을 찾을 수 없어 입력 내용을 삭제했습니다.\n"
+                "`종목등록`을 다시 눌러 6자리 종목코드를 입력해주세요.",
+                parse_mode="Markdown",
+                reply_markup=MAIN_KEYBOARD,
+            )
+            return
+        _pending[cid] = {
+            "action": "buy_price",
+            "code": stock["code"],
+            "name": stock["name"],
+        }
+        await update.message.reply_text(
+            "✅ 종목코드가 확인되었습니다.\n\n"
+            f"종목명: *{stock['name']}*\n"
+            f"종목코드: `{stock['code']}`\n\n"
+            "매수금액을 입력하세요.\n예: `71200`",
+            parse_mode="Markdown",
+        )
+        return
+
+    if action == "buy_price":
+        try:
+            buy_price = float(parts[0].replace(",", ""))
+        except (IndexError, ValueError):
+            _pending[cid] = pending
+            await update.message.reply_text("매수금액을 숫자로 입력해주세요.\n예: `71200`", parse_mode="Markdown")
+            return
+        if buy_price <= 0:
+            _pending[cid] = pending
+            await update.message.reply_text("매수금액은 0보다 큰 숫자로 입력해주세요.")
+            return
+        await ask_stock_registration_confirm(
+            update,
+            cid,
+            pending["code"],
+            pending["name"],
+            buy_price,
+        )
+        return
+
+    if action == "buy_confirm":
+        if text in {"등록확인", "확인", "예", "네", "yes", "y", "Y"}:
+            await complete_stock_registration(update, pending)
+            return
+        if text in {"취소", "아니오", "아니요", "no", "n", "N"}:
+            await update.message.reply_text("등록을 취소하고 입력 내용을 삭제했습니다.", reply_markup=MAIN_KEYBOARD)
+            return
+        _pending[cid] = pending
+        await update.message.reply_text(
+            "`등록확인` 또는 `취소`를 선택해주세요.",
+            parse_mode="Markdown",
+            reply_markup=CONFIRM_KEYBOARD,
+        )
 
 
 async def _build_portfolio_lines(active: list) -> list[str]:
@@ -857,35 +1011,36 @@ async def message_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # ── 다단계 입력 대기 중인 경우 ──
     pending = _pending.pop(cid, None)
-    if pending == "buy":
-        context.args = parts
-        await cmd_buy(update, context)
-        return
-    if pending == "close":
-        context.args = parts
-        await cmd_close(update, context)
-        return
-    if pending == "stock_analysis":
-        await cmd_stock_analysis(update, text)
-        return
+    if pending:
+        if text == "취소":
+            await update.message.reply_text("입력을 취소하고 대기 내용을 삭제했습니다.", reply_markup=MAIN_KEYBOARD)
+            return
+
+        action = pending.get("action")
+        if action in {"buy_code", "buy_price", "buy_confirm"}:
+            await handle_pending_stock_registration(update, text, parts, pending)
+            return
+        if action == "close":
+            context.args = parts
+            await cmd_close(update, context)
+            return
+        if action == "stock_analysis":
+            await cmd_stock_analysis(update, text)
+            return
 
     # ── 일반 라우팅 ──
-    if keyword == "추천":
+    if keyword in {"AI추천", "추천"}:
         await cmd_recommend(update, context)
         await cmd_new_recommend(update, context)
     elif keyword == "신규추천":
         await cmd_new_recommend(update, context)
-    elif keyword == "매수":
+    elif keyword in {"종목등록", "매수"}:
         if len(parts) >= 3:
             context.args = parts[1:]
             await cmd_buy(update, context)
         else:
-            _pending[cid] = "buy"
-            await update.message.reply_text(
-                "📌 매수할 *종목코드*와 *매수가*를 입력하세요.\n예: `005930 71200`",
-                parse_mode="Markdown",
-            )
-    elif keyword == "상태":
+            await start_stock_registration(update)
+    elif keyword in {"현재상황", "상태"}:
         if len(parts) >= 2:
             context.args = parts[1:]
         else:
@@ -900,7 +1055,7 @@ async def message_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if not active:
                 await update.message.reply_text("추적 중인 종목이 없습니다.")
             else:
-                _pending[cid] = "close"
+                _pending[cid] = {"action": "close"}
                 stock_list = "\n".join(f"• {s['name']} ({s['code']})" for s in active)
                 await update.message.reply_text(
                     f"추적 중단할 *종목코드*를 입력하세요:\n{stock_list}",
@@ -910,7 +1065,7 @@ async def message_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if len(parts) >= 2:
             await cmd_stock_analysis(update, " ".join(parts[1:]))
         else:
-            _pending[cid] = "stock_analysis"
+            _pending[cid] = {"action": "stock_analysis"}
             await update.message.reply_text(
                 "🔬 분석할 *종목명 또는 종목코드*를 입력하세요.\n예: `삼성전자` 또는 `005930`",
                 parse_mode="Markdown",
