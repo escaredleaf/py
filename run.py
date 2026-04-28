@@ -8,7 +8,12 @@ import sys
 import logging
 import sqlite3
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
+
+KST = timezone(timedelta(hours=9))
+
+def now_kst() -> datetime:
+    return datetime.now(KST)
 from urllib.parse import quote
 
 import asyncio
@@ -136,7 +141,7 @@ def add_tracked_stock(name: str, code: str, buy_price: float):
     with get_conn() as conn:
         conn.execute(
             "INSERT INTO tracked_stocks (name, code, buy_price, buy_time) VALUES (?, ?, ?, ?)",
-            (name, code, buy_price, datetime.now().isoformat())
+            (name, code, buy_price, now_kst().isoformat())
         )
         conn.commit()
 
@@ -240,7 +245,7 @@ def get_stock_info(code: str) -> dict | None:
 
 def is_market_open() -> bool:
     """한국 주식 장중 여부 (평일 09:00~15:30)"""
-    now = datetime.now()
+    now = now_kst()
     if now.weekday() >= 5:
         return False
     minutes = now.hour * 60 + now.minute
@@ -683,7 +688,7 @@ async def _build_portfolio_lines(active: list) -> list[str]:
             lines.append(f"\n*{stock['name']}* ({code}): 조회 실패")
 
     # AI 시황 요약 (장중에만)
-    now_h = datetime.now().hour * 60 + datetime.now().minute
+    now_h = now_kst().hour * 60 + now_kst().minute
     if stock_lines_for_llm and 9 * 60 + 5 <= now_h <= 15 * 60 + 25:
         commentary = await llm(
             "당신은 한국 주식 단타 전문가입니다. 간결하게 핵심만 답하세요.",
@@ -704,7 +709,7 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not active:
             await update.message.reply_text("현재 추적 중인 종목이 없습니다.")
             return
-        now = datetime.now().strftime("%H:%M:%S")
+        now = now_kst().strftime("%H:%M:%S")
         await update.message.reply_text(f"📋 *보유 종목 현황* `{now}` 조회 중...", parse_mode="Markdown")
         lines = [f"📋 *보유 종목 현황* `{now}`"]
         lines += await _build_portfolio_lines(active)
@@ -999,7 +1004,7 @@ async def auto_recommend_job(context: ContextTypes.DEFAULT_TYPE):
         return
 
     # 장중 시간만 실행 (KST 09:05 ~ 15:25)
-    now = datetime.now()
+    now = now_kst()
     if not (9 * 60 + 5 <= now.hour * 60 + now.minute <= 15 * 60 + 25):
         return
 
@@ -1099,7 +1104,7 @@ async def startup_notify(context: ContextTypes.DEFAULT_TYPE):
     if not chat_id:
         return
 
-    start_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    start_time = now_kst().strftime("%Y-%m-%d %H:%M:%S")
 
     # GitHub raw 파일의 Last-Modified 헤더로 업데이트 일자 확인
     update_date = "확인 불가"
@@ -1113,7 +1118,7 @@ async def startup_notify(context: ContextTypes.DEFAULT_TYPE):
             # 예: "Mon, 28 Apr 2026 04:00:00 GMT" → 파싱
             from email.utils import parsedate_to_datetime
             dt = parsedate_to_datetime(lm)
-            update_date = dt.strftime("%Y-%m-%d %H:%M UTC")
+            update_date = dt.astimezone(KST).strftime("%Y-%m-%d %H:%M KST")
     except Exception:
         pass
 
@@ -1161,7 +1166,7 @@ async def health_job(context: ContextTypes.DEFAULT_TYPE):
         results["DB"] = "❌ 오류"
         active = []
 
-    now = datetime.now().strftime("%H:%M:%S")
+    now = now_kst().strftime("%H:%M:%S")
     lines = [f"🔍 *헬스체크* `{now}`"]
     for k, v in results.items():
         lines.append(f"• {k}: {v}")
