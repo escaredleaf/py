@@ -574,44 +574,82 @@ async def track_job(context: ContextTypes.DEFAULT_TYPE):
             print(f"[track_job] {stock['name']} 오류: {e}")
 
 async def health_job(context: ContextTypes.DEFAULT_TYPE):
-    """5분마다 네이버 연동 상태 체크 - 항상 결과 전송"""
+    """5분마다 연동 상태 + 보유 종목 현황 전송"""
     chat_id = get_setting("chat_id")
     if not chat_id:
         return
 
+    # ── 연동 상태 체크 ──
     results = {}
-
-    # 네이버 금융 거래대금 페이지
     try:
         res = requests.get(
             "https://finance.naver.com/sise/sise_quant.nhn?sosok=0",
             headers=HEADERS, timeout=8
         )
-        results["네이버 금융"] = "✅ 정상" if res.status_code == 200 else f"❌ HTTP {res.status_code}"
-    except Exception as e:
-        results["네이버 금융"] = f"❌ 연결 실패"
+        results["네이버 금융"] = "✅" if res.status_code == 200 else f"❌ {res.status_code}"
+    except Exception:
+        results["네이버 금융"] = "❌ 연결 실패"
 
-    # 네이버 모바일 API
     try:
         res = requests.get(
             "https://m.stock.naver.com/api/stock/005930/basic",
             headers=HEADERS, timeout=8
         )
-        results["네이버 API"] = "✅ 정상" if res.status_code == 200 else f"❌ HTTP {res.status_code}"
-    except Exception as e:
-        results["네이버 API"] = f"❌ 연결 실패"
+        results["네이버 API"] = "✅" if res.status_code == 200 else f"❌ {res.status_code}"
+    except Exception:
+        results["네이버 API"] = "❌ 연결 실패"
 
-    # DB 및 추적 종목 수
     try:
         active = get_active_stocks()
-        results["DB"] = f"✅ 정상 (추적 {len(active)}종목)"
-    except Exception as e:
-        results["DB"] = f"❌ 오류"
+        results["DB"] = "✅"
+    except Exception:
+        results["DB"] = "❌ 오류"
+        active = []
 
     now = datetime.now().strftime("%H:%M:%S")
     lines = [f"🔍 *헬스체크* `{now}`"]
-    for name, status in results.items():
-        lines.append(f"• {name}: {status}")
+    for k, v in results.items():
+        lines.append(f"• {k}: {v}")
+
+    # ── 보유 종목 현황 ──
+    if active:
+        lines.append("\n📋 *보유 종목 현황*")
+        for stock in active:
+            code      = stock.get("code", "")
+            buy_price = stock["buy_price"]
+            try:
+                info    = get_stock_info(code)
+                candles = get_candles(code, count=10)
+                if not info:
+                    raise ValueError("가격 조회 실패")
+
+                cur = info["price"]
+                gap = (cur - buy_price) / buy_price * 100
+                gap_emoji = "📈" if gap >= 0 else "📉"
+
+                # 추이: 최근 5봉 종가 방향
+                if len(candles) >= 5:
+                    closes = [c["close"] for c in candles[-5:]]
+                    ups   = sum(1 for i in range(1, len(closes)) if closes[i] > closes[i-1])
+                    downs = sum(1 for i in range(1, len(closes)) if closes[i] < closes[i-1])
+                    if ups >= 3:
+                        trend = "↑ 상승 추세"
+                    elif downs >= 3:
+                        trend = "↓ 하락 추세"
+                    else:
+                        trend = "→ 횡보"
+                else:
+                    trend = "데이터 부족"
+
+                lines.append(
+                    f"\n*{stock['name']}* ({code})\n"
+                    f"  매수가: {buy_price:,.0f}원\n"
+                    f"  현재가: {cur:,.0f}원\n"
+                    f"  {gap_emoji} 갭: {gap:+.2f}%\n"
+                    f"  추이: {trend}"
+                )
+            except Exception as e:
+                lines.append(f"\n*{stock['name']}* ({code}): 조회 실패")
 
     await context.bot.send_message(
         chat_id=int(chat_id),
