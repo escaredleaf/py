@@ -595,6 +595,8 @@ HELP_TEXT = (
     "예시: `설정` → `30초` 또는 `5분`"
 )
 
+LEGACY_BUTTONS = {"추천", "매수", "상태", "종료"}
+
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     set_setting("chat_id", str(update.effective_chat.id))
@@ -1169,6 +1171,12 @@ async def message_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await handle_monitor_interval_input(update, context, text)
             return
 
+    if keyword in LEGACY_BUTTONS:
+        await update.message.reply_text(
+            "🔄 버튼 메뉴를 최신 버전으로 갱신했습니다.",
+            reply_markup=MAIN_KEYBOARD,
+        )
+
     # ── 일반 라우팅 ──
     if keyword in {"AI추천", "추천"}:
         await cmd_recommend(update, context)
@@ -1434,9 +1442,11 @@ async def startup_notify(context: ContextTypes.DEFAULT_TYPE):
         text=(
             "🚀 *QuantScalpBot 시작*\n"
             f"  시작 시각: `{start_time}`\n"
-            f"  최신 업데이트: `{update_date}`"
+            f"  최신 업데이트: `{update_date}`\n"
+            "  버튼 메뉴: 최신 버전으로 갱신"
         ),
         parse_mode="Markdown",
+        reply_markup=MAIN_KEYBOARD,
     )
 
 
