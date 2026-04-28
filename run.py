@@ -45,12 +45,22 @@ def calc(expr):
         return f"오류: {e}"
 
 
+HELP = (
+    "사용 가능한 명령어:\n"
+    "/start - 도움말\n"
+    "/info  - 시스템 정보\n"
+    "/fizzbuzz - FizzBuzz (1~20)\n"
+    "/calc 수식 - 계산기 (예: /calc 3*7+2)\n"
+    "\n알 수 없는 명령어는 이 도움말을 표시합니다."
+)
+
+
 def handle(message):
     chat_id = message["chat"]["id"]
     text = message.get("text", "").strip()
 
-    if text == "/start":
-        send(chat_id, "안녕하세요! 사용 가능한 명령어:\n/info - 시스템 정보\n/fizzbuzz - FizzBuzz (1~20)\n/calc 수식 - 계산기\n그 외 메시지는 그대로 돌려드립니다.")
+    if text in ("/start", "/help"):
+        send(chat_id, HELP)
     elif text == "/info":
         send(chat_id, system_info())
     elif text == "/fizzbuzz":
@@ -59,7 +69,7 @@ def handle(message):
         expr = text[6:].strip()
         send(chat_id, f"{expr} = {calc(expr)}")
     else:
-        send(chat_id, f"받은 메시지: {text}")
+        send(chat_id, f"알 수 없는 명령어입니다.\n\n{HELP}")
 
 
 def poll():
