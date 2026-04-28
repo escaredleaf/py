@@ -42,7 +42,10 @@ DEFAULT_MONITOR_INTERVAL_SECONDS = 15
 MIN_MONITOR_INTERVAL_SECONDS = 5
 MAX_MONITOR_INTERVAL_SECONDS = 24 * 60 * 60
 MONITOR_INTERVAL_SETTING_KEY = "monitor_interval_seconds"
+NOTIFICATION_ENABLED_SETTING_KEY = "notification_enabled"
 TRACK_JOB_NAME = "track_job"
+NOTIFICATION_JOB_NAME = "health_job"
+SELL_SCAN_INTERVAL_SECONDS = 15
 
 HEADERS = {
     "User-Agent": (
@@ -567,6 +570,7 @@ MAIN_KEYBOARD = ReplyKeyboardMarkup(
         [KeyboardButton("AI추천"),   KeyboardButton("종목등록")],
         [KeyboardButton("현재상황"), KeyboardButton("종목분석")],
         [KeyboardButton("종목삭제"), KeyboardButton("설정")],
+        [KeyboardButton("메시지 알림받기"), KeyboardButton("메시지 알림중지")],
         [KeyboardButton("도움말")],
     ],
     resize_keyboard=True,
@@ -588,7 +592,9 @@ HELP_TEXT = (
     "`현재상황 종목코드` - 특정 종목 상세 현황\n"
     "`종목삭제 종목코드` - 종목 추적 중단\n"
     "`종목분석 종목명또는코드` - IB 스타일 심층 분석\n"
-    "`설정` - 모니터링 알림간격 변경\n"
+    "`설정` - 메시지 알림간격 변경\n"
+    "`메시지 알림받기` - 자동 헬스체크/보유종목 메시지 시작\n"
+    "`메시지 알림중지` - 자동 헬스체크/보유종목 메시지 중지\n"
     "`도움말` - 이 메시지\n\n"
     "예시: `종목등록 005930 71200`  (삼성전자)\n"
     "예시: `종목분석 삼성전자`\n"
@@ -875,25 +881,69 @@ def format_interval(seconds: int) -> str:
     return f"{seconds}초"
 
 
-def schedule_track_job(job_queue, interval: int, job_kwargs: dict | None = None, first: int | None = None):
-    for job in job_queue.get_jobs_by_name(TRACK_JOB_NAME):
+def is_notification_enabled() -> bool:
+    return get_setting(NOTIFICATION_ENABLED_SETTING_KEY) != "0"
+
+
+def set_notification_enabled(enabled: bool):
+    set_setting(NOTIFICATION_ENABLED_SETTING_KEY, "1" if enabled else "0")
+
+
+def schedule_named_job(
+    job_queue,
+    name: str,
+    callback,
+    interval: int,
+    job_kwargs: dict | None = None,
+    first: int | None = None,
+):
+    for job in job_queue.get_jobs_by_name(name):
         job.schedule_removal()
     job_queue.run_repeating(
-        track_job,
+        callback,
         interval=interval,
         first=first if first is not None else interval,
-        name=TRACK_JOB_NAME,
+        name=name,
         job_kwargs=job_kwargs,
+    )
+
+
+def schedule_track_job(job_queue, job_kwargs: dict | None = None, first: int | None = None):
+    schedule_named_job(
+        job_queue,
+        TRACK_JOB_NAME,
+        track_job,
+        SELL_SCAN_INTERVAL_SECONDS,
+        job_kwargs,
+        first=first,
+    )
+
+
+def schedule_notification_job(job_queue, job_kwargs: dict | None = None, first: int | None = None):
+    if not is_notification_enabled():
+        for job in job_queue.get_jobs_by_name(NOTIFICATION_JOB_NAME):
+            job.schedule_removal()
+        return
+    interval = get_monitor_interval_seconds()
+    schedule_named_job(
+        job_queue,
+        NOTIFICATION_JOB_NAME,
+        health_job,
+        interval,
+        job_kwargs,
+        first=first,
     )
 
 
 async def cmd_settings(update: Update):
     cid = str(update.effective_chat.id)
     current = get_monitor_interval_seconds()
+    notification_status = "ON" if is_notification_enabled() else "OFF"
     _pending[cid] = {"action": "settings_monitor_interval"}
     await update.message.reply_text(
         "⚙️ *설정*\n\n"
-        f"현재 모니터링 알림간격: *{format_interval(current)}*\n\n"
+        f"현재 메시지 알림: *{notification_status}*\n"
+        f"현재 메시지 알림간격: *{format_interval(current)}*\n\n"
         "새 알림간격을 입력하세요.\n"
         "예: `15초`, `1분`, `5m`, `3600`\n"
         f"허용 범위: {format_interval(MIN_MONITOR_INTERVAL_SECONDS)} ~ "
@@ -917,16 +967,43 @@ async def handle_monitor_interval_input(update: Update, context: ContextTypes.DE
 
     set_setting(MONITOR_INTERVAL_SETTING_KEY, str(seconds))
     if context.job_queue:
-        schedule_track_job(
+        schedule_notification_job(
             context.job_queue,
-            seconds,
             {"misfire_grace_time": 30},
             first=seconds,
         )
     await update.message.reply_text(
-        "✅ 모니터링 알림간격을 저장했습니다.\n"
+        "✅ 메시지 알림간격을 저장했습니다.\n"
         f"새 간격: *{format_interval(seconds)}*",
         parse_mode="Markdown",
+        reply_markup=MAIN_KEYBOARD,
+    )
+
+
+async def cmd_notification_on(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    set_notification_enabled(True)
+    interval = get_monitor_interval_seconds()
+    if context.job_queue:
+        schedule_notification_job(
+            context.job_queue,
+            {"misfire_grace_time": 30},
+            first=interval,
+        )
+    await update.message.reply_text(
+        "🔔 메시지 알림을 시작했습니다.\n"
+        f"알림간격: *{format_interval(interval)}*",
+        parse_mode="Markdown",
+        reply_markup=MAIN_KEYBOARD,
+    )
+
+
+async def cmd_notification_off(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    set_notification_enabled(False)
+    if context.job_queue:
+        for job in context.job_queue.get_jobs_by_name(NOTIFICATION_JOB_NAME):
+            job.schedule_removal()
+    await update.message.reply_text(
+        "🔕 메시지 알림을 중지했습니다.\n수동 조회 버튼은 계속 사용할 수 있습니다.",
         reply_markup=MAIN_KEYBOARD,
     )
 
@@ -1223,6 +1300,10 @@ async def message_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await cmd_help(update, context)
     elif keyword == "설정":
         await cmd_settings(update)
+    elif keyword == "메시지 알림받기":
+        await cmd_notification_on(update, context)
+    elif keyword == "메시지 알림중지":
+        await cmd_notification_off(update, context)
     else:
         await update.message.reply_text(
             HELP_TEXT, parse_mode="Markdown", reply_markup=MAIN_KEYBOARD
@@ -1317,6 +1398,8 @@ async def auto_recommend_job(context: ContextTypes.DEFAULT_TYPE):
     chat_id = get_setting("chat_id")
     if not chat_id:
         return
+    if not is_notification_enabled():
+        return
 
     # 장중 시간만 실행 (KST 09:05 ~ 15:25)
     now = now_kst()
@@ -1336,6 +1419,8 @@ async def track_job(context: ContextTypes.DEFAULT_TYPE):
     """보유 종목 매도 신호 감시"""
     chat_id = get_setting("chat_id")
     if not chat_id:
+        return
+    if not is_notification_enabled():
         return
     for stock in get_active_stocks():
         code = stock.get("code")
@@ -1451,9 +1536,11 @@ async def startup_notify(context: ContextTypes.DEFAULT_TYPE):
 
 
 async def health_job(context: ContextTypes.DEFAULT_TYPE):
-    """5분마다 연동 상태 + 보유 종목 현황 전송"""
+    """설정된 간격마다 연동 상태 + 보유 종목 현황 전송"""
     chat_id = get_setting("chat_id")
     if not chat_id:
+        return
+    if not is_notification_enabled():
         return
 
     # ── 연동 상태 체크 ──
@@ -1514,8 +1601,8 @@ def main():
 
     jk = {"misfire_grace_time": 30}  # 30초 이내 지연은 경고 없이 실행
     monitor_interval = get_monitor_interval_seconds()
-    schedule_track_job(app.job_queue, monitor_interval, jk, first=monitor_interval)
-    app.job_queue.run_repeating(health_job,         interval=300,  first=60,  job_kwargs=jk)
+    schedule_track_job(app.job_queue, jk, first=SELL_SCAN_INTERVAL_SECONDS)
+    schedule_notification_job(app.job_queue, jk, first=monitor_interval)
     app.job_queue.run_repeating(auto_recommend_job, interval=1800, first=120, job_kwargs=jk)
     app.job_queue.run_once(startup_notify, when=3)
 
