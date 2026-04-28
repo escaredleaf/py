@@ -1010,9 +1010,10 @@ def main():
     # 한글 명령어는 텍스트 메시지로 처리 (텔레그램은 영문 명령어만 허용)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_router))
 
-    app.job_queue.run_repeating(track_job,           interval=15,   first=15)
-    app.job_queue.run_repeating(health_job,          interval=300,  first=60)
-    app.job_queue.run_repeating(auto_recommend_job,  interval=1800, first=120)
+    jk = {"misfire_grace_time": 30}  # 30초 이내 지연은 경고 없이 실행
+    app.job_queue.run_repeating(track_job,          interval=15,   first=15,  job_kwargs=jk)
+    app.job_queue.run_repeating(health_job,         interval=300,  first=60,  job_kwargs=jk)
+    app.job_queue.run_repeating(auto_recommend_job, interval=1800, first=120, job_kwargs=jk)
 
     print("🚀 QuantScalpBot 가동 중 (Ctrl+C 로 종료)")
     app.run_polling(allowed_updates=["message"])
