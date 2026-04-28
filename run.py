@@ -16,7 +16,7 @@ import asyncio
 import requests
 import pandas as pd
 from bs4 import BeautifulSoup
-from telegram import Update
+from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import Application, ContextTypes, CommandHandler, MessageHandler, filters
 
 # ── 설정 ──────────────────────────────────────────────────────────────
@@ -475,7 +475,20 @@ def calculate_sell_score(stock_info: dict, candles: list, buy_price: float) -> d
     }
 
 
-# ── 텔레그램 명령어 ───────────────────────────────────────────────────
+# ── 텔레그램 UI ───────────────────────────────────────────────────────
+
+# 인자가 필요한 명령어 대기 상태 (chat_id → action)
+_pending: dict[str, str] = {}
+
+MAIN_KEYBOARD = ReplyKeyboardMarkup(
+    [
+        [KeyboardButton("추천"),     KeyboardButton("신규추천")],
+        [KeyboardButton("매수"),     KeyboardButton("상태")],
+        [KeyboardButton("종료"),     KeyboardButton("도움말")],
+    ],
+    resize_keyboard=True,
+    persistent=True,
+)
 
 HELP_TEXT = (
     "📈 *QuantScalpBot* 명령어\n"
@@ -495,12 +508,16 @@ HELP_TEXT = (
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     set_setting("chat_id", str(update.effective_chat.id))
     await update.message.reply_text(
-        f"✅ QuantScalpBot 시작!\n\n{HELP_TEXT}", parse_mode="Markdown"
+        "✅ *QuantScalpBot 시작!*\n아래 버튼을 눌러 사용하세요.",
+        parse_mode="Markdown",
+        reply_markup=MAIN_KEYBOARD,
     )
 
 
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(HELP_TEXT, parse_mode="Markdown")
+    await update.message.reply_text(
+        HELP_TEXT, parse_mode="Markdown", reply_markup=MAIN_KEYBOARD
+    )
 
 
 async def cmd_recommend(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -623,28 +640,76 @@ async def cmd_close(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def message_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """한글 텍스트 메시지를 명령어로 라우팅"""
-    text = update.message.text.strip()
-    parts = text.split()
+    """버튼/텍스트 명령어 라우팅 + 다단계 입력 상태 처리"""
+    text    = update.message.text.strip()
+    parts   = text.split()
     keyword = parts[0] if parts else ""
+    cid     = str(update.effective_chat.id)
 
+    # ── 다단계 입력 대기 중인 경우 ──
+    pending = _pending.pop(cid, None)
+    if pending == "buy":
+        context.args = parts
+        await cmd_buy(update, context)
+        return
+    if pending == "close":
+        context.args = parts
+        await cmd_close(update, context)
+        return
+    if pending == "status_code":
+        context.args = parts
+        await cmd_status(update, context)
+        return
+
+    # ── 일반 라우팅 ──
     if keyword == "추천":
         await cmd_recommend(update, context)
     elif keyword == "신규추천":
         await cmd_new_recommend(update, context)
     elif keyword == "매수":
-        context.args = parts[1:]
-        await cmd_buy(update, context)
+        if len(parts) >= 3:
+            context.args = parts[1:]
+            await cmd_buy(update, context)
+        else:
+            _pending[cid] = "buy"
+            await update.message.reply_text(
+                "📌 매수할 *종목코드*와 *매수가*를 입력하세요.\n예: `005930 71200`",
+                parse_mode="Markdown",
+            )
     elif keyword == "상태":
-        context.args = parts[1:]
-        await cmd_status(update, context)
+        if len(parts) >= 2:
+            context.args = parts[1:]
+            await cmd_status(update, context)
+        else:
+            # 전체 목록 먼저 보여주고 상세 조회 여부 물음
+            await cmd_status(update, context)
+            active = get_active_stocks()
+            if active:
+                _pending[cid] = "status_code"
+                await update.message.reply_text(
+                    "특정 종목 상세 조회: 종목코드를 입력하세요.\n(취소: 다른 버튼 누르기)",
+                )
     elif keyword == "종료":
-        context.args = parts[1:]
-        await cmd_close(update, context)
+        if len(parts) >= 2:
+            context.args = parts[1:]
+            await cmd_close(update, context)
+        else:
+            active = get_active_stocks()
+            if not active:
+                await update.message.reply_text("추적 중인 종목이 없습니다.")
+            else:
+                _pending[cid] = "close"
+                stock_list = "\n".join(f"• {s['name']} ({s['code']})" for s in active)
+                await update.message.reply_text(
+                    f"추적 중단할 *종목코드*를 입력하세요:\n{stock_list}",
+                    parse_mode="Markdown",
+                )
     elif keyword == "도움말":
         await cmd_help(update, context)
     else:
-        await update.message.reply_text(HELP_TEXT, parse_mode="Markdown")
+        await update.message.reply_text(
+            HELP_TEXT, parse_mode="Markdown", reply_markup=MAIN_KEYBOARD
+        )
 
 
 async def cmd_new_recommend(update: Update, context: ContextTypes.DEFAULT_TYPE):
