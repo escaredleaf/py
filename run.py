@@ -52,7 +52,7 @@ logging.basicConfig(
 
 # ── LLM ──────────────────────────────────────────────────────────────
 
-def _llm_call(system: str, user: str, max_tokens: int = 250) -> str:
+def _llm_call(system: str, user: str, max_tokens: int = 1000) -> str:
     """동기 LLM 호출 (requests)"""
     try:
         res = requests.post(
@@ -87,7 +87,7 @@ def _llm_call(system: str, user: str, max_tokens: int = 250) -> str:
         return f"⚠️ LLM 오류\n{e}"
 
 
-async def llm(system: str, user: str, max_tokens: int = 250) -> str:
+async def llm(system: str, user: str, max_tokens: int = 1000) -> str:
     """비동기 래퍼 - 이벤트 루프 블로킹 방지"""
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(None, _llm_call, system, user, max_tokens)
@@ -606,7 +606,7 @@ async def cmd_recommend(update: Update, context: ContextTypes.DEFAULT_TYPE):
         commentary = await llm(
             "당신은 한국 주식 단타 전문가입니다. 간결하고 핵심만 답하세요.",
             f"다음 종목들이 단타 추천됐습니다. 시장 맥락과 주의사항을 2~3문장으로 분석해주세요:\n{stock_summary}",
-            max_tokens=200,
+            max_tokens=800,
         )
         if commentary:
             await update.message.reply_text(f"🤖 *AI 분석*\n{commentary}", parse_mode="Markdown")
@@ -676,7 +676,7 @@ async def _build_portfolio_lines(active: list) -> list[str]:
             opinion = _llm_call(
                 "당신은 한국 주식 단타 전문가입니다. 간결·명확하게 답하세요.",
                 expert_prompt,
-                120,
+                800,
             )
             print(f"[LLM] {stock['name']} 결과: {repr(opinion[:80]) if opinion else repr(opinion)}")
 
@@ -703,7 +703,7 @@ async def _build_portfolio_lines(active: list) -> list[str]:
             "당신은 한국 주식 단타 전문가입니다. 간결하게 핵심만 답하세요.",
             "보유 종목 현황입니다. 지금 장 분위기와 대응 방향을 2문장으로 조언해주세요:\n"
             + "\n".join(stock_lines_for_llm),
-            max_tokens=150,
+            max_tokens=800,
         )
         if commentary:
             lines.append(f"\n🤖 *AI 시황*\n{commentary}")
@@ -826,7 +826,7 @@ async def cmd_stock_analysis(update: Update, query: str):
 
 데이터가 부족한 항목은 [추정] 또는 [데이터 없음]으로 명시하세요."""
 
-    result = await llm(system_prompt, user_prompt, max_tokens=1200)
+    result = await llm(system_prompt, user_prompt, max_tokens=3000)
 
     if not result:
         await update.message.reply_text("분석 실패: LLM 응답 없음")
@@ -964,7 +964,7 @@ async def cmd_new_recommend(update: Update, context: ContextTypes.DEFAULT_TYPE):
         commentary = await llm(
             "당신은 한국 주식 단타 전문가입니다. 간결하고 핵심만 답하세요.",
             f"방금 모멘텀이 시작된 종목들입니다. 진입 시 유의사항을 2~3문장으로 설명해주세요:\n{stock_summary}",
-            max_tokens=200,
+            max_tokens=800,
         )
         if commentary:
             await update.message.reply_text(f"🤖 *AI 분석*\n{commentary}", parse_mode="Markdown")
@@ -1045,7 +1045,7 @@ async def track_job(context: ContextTypes.DEFAULT_TYPE):
                     "당신은 한국 주식 단타 전문가입니다. 한 문장으로 핵심만 답하세요.",
                     f"{stock['name']} 매도 신호: {', '.join(sd['reasons'])}. "
                     f"수익률 {sd['pnl']:+.2f}%. 지금 매도해야 할까요?",
-                    max_tokens=100,
+                    max_tokens=800,
                 )
                 text = (
                     f"⚠️ *매도 신호* {stock['name']}  (점수: {sd['score']})\n"
