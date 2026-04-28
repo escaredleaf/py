@@ -3,6 +3,8 @@
     <string name="title_phone_number">전화번호</string>
     <string name="hint_phone_number">예: 01012345678</string>
     <string name="action_call">전화 걸기</string>
+    <string name="phone_hint">@string/hint_phone_number</string>
+    <string name="call_button">@string/action_call</string>
     <string name="error_empty_phone">전화번호를 입력하세요.</string>
     <string name="error_permission_denied">전화 권한이 필요합니다.</string>
     <string name="error_cannot_call">전화 앱을 실행할 수 없습니다.</string>
