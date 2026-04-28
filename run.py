@@ -195,7 +195,7 @@ def scrape_top_stocks(limit: int = 40) -> list[dict]:
                         continue
 
                     price = int(price_text)
-                    if not (2_000 <= price <= 30_000):
+                    if price < 500:  # 너무 낮은 동전주만 제외
                         continue
 
                     stocks.append({
@@ -315,12 +315,12 @@ def calculate_buy_score(stock: dict, candles: list) -> dict:
     score = 0
     reasons: list[str] = []
 
-    if len(candles) < 15:
+    if len(candles) < 10:
         return {"score": 0, "reasons": ["데이터 부족"]}
 
     price = stock.get("price", 0)
-    if not (2_000 <= price <= 30_000):
-        return {"score": 0, "reasons": ["가격 범위 제외"]}
+    if price < 500:
+        return {"score": 0, "reasons": ["동전주 제외"]}
 
     df = pd.DataFrame(candles)
 
@@ -388,12 +388,12 @@ def calculate_new_score(stock: dict, candles: list) -> dict:
     score = 0
     reasons: list[str] = []
 
-    if len(candles) < 20:
+    if len(candles) < 10:
         return {"score": 0, "reasons": ["데이터 부족"]}
 
     price = stock.get("price", 0)
-    if not (2_000 <= price <= 30_000):
-        return {"score": 0, "reasons": ["가격 범위 제외"]}
+    if price < 500:
+        return {"score": 0, "reasons": ["동전주 제외"]}
 
     df = pd.DataFrame(candles)
 
@@ -880,6 +880,53 @@ async def track_job(context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             print(f"[track_job] {stock['name']} 오류: {e}")
 
+
+def _analyze_trend(cur: int, daily: list, buy_price: float, open_price: int) -> str:
+    """
+    일봉 데이터 기반 추이 분석
+    - MA5 / MA20 방향 (골든/데드크로스)
+    - 5일 / 10일 변화율
+    - 장중이면 당일 시가 대비 흐름도 추가
+    """
+    if len(daily) < 5:
+        # 일봉 부족 → 매수가 대비만 표시
+        base  = open_price if open_price > 0 else buy_price
+        label = "시가" if open_price > 0 else "매수가"
+        diff  = (cur - base) / base * 100
+        arrow = "↑" if diff > 0.3 else ("↓" if diff < -0.3 else "→")
+        return f"{arrow} {label} 대비 {diff:+.1f}%"
+
+    closes = [c["close"] for c in daily]
+
+    # MA5 / MA20
+    ma5  = sum(closes[-5:]) / 5
+    ma20 = sum(closes[-min(20, len(closes)):]) / min(20, len(closes))
+
+    # 기간 변화율
+    chg5  = (closes[-1] - closes[-5])  / closes[-5]  * 100
+    chg10 = (closes[-1] - closes[-min(10, len(closes))]) / closes[-min(10, len(closes))] * 100
+
+    # 방향 판단
+    if ma5 > ma20 and chg5 > 0:
+        cross = "골든크로스"
+        arrow = "↑"
+    elif ma5 < ma20 and chg5 < 0:
+        cross = "데드크로스"
+        arrow = "↓"
+    else:
+        cross = "혼조"
+        arrow = "→"
+
+    trend = f"{arrow} {cross} | 5일 {chg5:+.1f}% / 10일 {chg10:+.1f}%"
+
+    # 장중이면 당일 흐름 추가
+    if open_price > 0:
+        intraday = (cur - open_price) / open_price * 100
+        trend += f" | 당일 {intraday:+.1f}%"
+
+    return trend
+
+
 async def health_job(context: ContextTypes.DEFAULT_TYPE):
     """5분마다 연동 상태 + 보유 종목 현황 전송"""
     chat_id = get_setting("chat_id")
@@ -925,8 +972,8 @@ async def health_job(context: ContextTypes.DEFAULT_TYPE):
             code      = stock.get("code", "")
             buy_price = stock["buy_price"]
             try:
-                info    = get_stock_info(code)
-                candles = get_candles(code, count=10)
+                info   = get_stock_info(code)
+                daily  = get_daily_candles(code, count=25)
                 if not info:
                     raise ValueError("가격 조회 실패")
 
@@ -934,30 +981,8 @@ async def health_job(context: ContextTypes.DEFAULT_TYPE):
                 gap = (cur - buy_price) / buy_price * 100
                 gap_emoji = "📈" if gap >= 0 else "📉"
 
-                # 추이: 1분봉 5개 이상이면 봉 방향, 없으면 시가 대비 현재가로 판단
-                if len(candles) >= 5:
-                    closes = [c["close"] for c in candles[-5:]]
-                    ups   = sum(1 for i in range(1, len(closes)) if closes[i] > closes[i-1])
-                    downs = sum(1 for i in range(1, len(closes)) if closes[i] < closes[i-1])
-                    if ups >= 3:
-                        trend = "↑ 상승 추세"
-                    elif downs >= 3:
-                        trend = "↓ 하락 추세"
-                    else:
-                        trend = "→ 횡보"
-                else:
-                    # 장 외 시간 또는 데이터 부족 → 시가 대비 현재가로 판단
-                    open_price = info.get("open", 0)
-                    # 시가 있으면 시가 대비, 없으면 매수가 대비로 추이 표시
-                    base_price = open_price if (open_price and open_price > 0) else buy_price
-                    base_label = "시가" if (open_price and open_price > 0) else "매수가"
-                    diff = (cur - base_price) / base_price * 100
-                    if diff > 0.3:
-                        trend = f"↑ {base_label} 대비 +{diff:.1f}%"
-                    elif diff < -0.3:
-                        trend = f"↓ {base_label} 대비 {diff:.1f}%"
-                    else:
-                        trend = f"→ {base_label} 대비 {diff:+.1f}%"
+                # ── 추이 분석: 일봉 기반 MA + 기간 변화율 ──
+                trend = _analyze_trend(cur, daily, buy_price, info.get("open", 0))
 
                 lines.append(
                     f"\n*{stock['name']}* ({code})\n"
