@@ -36,6 +36,11 @@ LLM_MODEL = "openai/gpt-5-mini-2025-08-07"
 LLM_KEY   = os.environ.get("LLM_KEY", "sk-gapk-6z3jLdHWOoztTgupT9OgLA3fU-QcKSY1")
 
 DB_PATH = "quant_scalp.db"
+DEFAULT_MONITOR_INTERVAL_SECONDS = 15
+MIN_MONITOR_INTERVAL_SECONDS = 5
+MAX_MONITOR_INTERVAL_SECONDS = 24 * 60 * 60
+MONITOR_INTERVAL_SETTING_KEY = "monitor_interval_seconds"
+TRACK_JOB_NAME = "track_job"
 
 HEADERS = {
     "User-Agent": (
@@ -549,7 +554,8 @@ MAIN_KEYBOARD = ReplyKeyboardMarkup(
     [
         [KeyboardButton("AI추천"),   KeyboardButton("종목등록")],
         [KeyboardButton("현재상황"), KeyboardButton("종목분석")],
-        [KeyboardButton("종목삭제"), KeyboardButton("도움말")],
+        [KeyboardButton("종목삭제"), KeyboardButton("설정")],
+        [KeyboardButton("도움말")],
     ],
     resize_keyboard=True,
 )
@@ -570,9 +576,11 @@ HELP_TEXT = (
     "`현재상황 종목코드` - 특정 종목 상세 현황\n"
     "`종목삭제 종목코드` - 종목 추적 중단\n"
     "`종목분석 종목명또는코드` - IB 스타일 심층 분석\n"
+    "`설정` - 모니터링 알림간격 변경\n"
     "`도움말` - 이 메시지\n\n"
     "예시: `종목등록 005930 71200`  (삼성전자)\n"
-    "예시: `종목분석 삼성전자`"
+    "예시: `종목분석 삼성전자`\n"
+    "예시: `설정` → `30초` 또는 `5분`"
 )
 
 
@@ -716,7 +724,7 @@ async def complete_stock_registration(update: Update, pending: dict):
         f"✅ *매수 등록 완료*\n"
         f"종목: {name} ({code})\n"
         f"매수가: {buy_price:,.0f}원\n"
-        f"15초마다 매도 신호 모니터링 시작",
+        f"{format_interval(get_monitor_interval_seconds())}마다 매도 신호 모니터링 시작",
         parse_mode="Markdown",
         reply_markup=MAIN_KEYBOARD,
     )
@@ -789,6 +797,124 @@ async def handle_pending_stock_registration(
             parse_mode="Markdown",
             reply_markup=CONFIRM_KEYBOARD,
         )
+
+
+def parse_monitor_interval(text: str) -> int | None:
+    value = text.strip().lower().replace(" ", "")
+    if not value:
+        return None
+
+    multiplier = 1
+    for suffix, unit_multiplier in (
+        ("seconds", 1),
+        ("second", 1),
+        ("secs", 1),
+        ("sec", 1),
+        ("s", 1),
+        ("초", 1),
+        ("minutes", 60),
+        ("minute", 60),
+        ("mins", 60),
+        ("min", 60),
+        ("m", 60),
+        ("분", 60),
+        ("hours", 3600),
+        ("hour", 3600),
+        ("hrs", 3600),
+        ("hr", 3600),
+        ("h", 3600),
+        ("시간", 3600),
+    ):
+        if value.endswith(suffix):
+            value = value[:-len(suffix)]
+            multiplier = unit_multiplier
+            break
+
+    try:
+        seconds = int(float(value) * multiplier)
+    except ValueError:
+        return None
+
+    if not (MIN_MONITOR_INTERVAL_SECONDS <= seconds <= MAX_MONITOR_INTERVAL_SECONDS):
+        return None
+    return seconds
+
+
+def get_monitor_interval_seconds() -> int:
+    raw = get_setting(MONITOR_INTERVAL_SETTING_KEY)
+    if not raw:
+        return DEFAULT_MONITOR_INTERVAL_SECONDS
+    try:
+        seconds = int(raw)
+    except ValueError:
+        return DEFAULT_MONITOR_INTERVAL_SECONDS
+    if not (MIN_MONITOR_INTERVAL_SECONDS <= seconds <= MAX_MONITOR_INTERVAL_SECONDS):
+        return DEFAULT_MONITOR_INTERVAL_SECONDS
+    return seconds
+
+
+def format_interval(seconds: int) -> str:
+    if seconds % 3600 == 0:
+        return f"{seconds // 3600}시간"
+    if seconds % 60 == 0:
+        return f"{seconds // 60}분"
+    return f"{seconds}초"
+
+
+def schedule_track_job(job_queue, interval: int, job_kwargs: dict | None = None, first: int | None = None):
+    for job in job_queue.get_jobs_by_name(TRACK_JOB_NAME):
+        job.schedule_removal()
+    job_queue.run_repeating(
+        track_job,
+        interval=interval,
+        first=first if first is not None else interval,
+        name=TRACK_JOB_NAME,
+        job_kwargs=job_kwargs,
+    )
+
+
+async def cmd_settings(update: Update):
+    cid = str(update.effective_chat.id)
+    current = get_monitor_interval_seconds()
+    _pending[cid] = {"action": "settings_monitor_interval"}
+    await update.message.reply_text(
+        "⚙️ *설정*\n\n"
+        f"현재 모니터링 알림간격: *{format_interval(current)}*\n\n"
+        "새 알림간격을 입력하세요.\n"
+        "예: `15초`, `1분`, `5m`, `3600`\n"
+        f"허용 범위: {format_interval(MIN_MONITOR_INTERVAL_SECONDS)} ~ "
+        f"{format_interval(MAX_MONITOR_INTERVAL_SECONDS)}",
+        parse_mode="Markdown",
+    )
+
+
+async def handle_monitor_interval_input(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str):
+    seconds = parse_monitor_interval(text)
+    if seconds is None:
+        _pending[str(update.effective_chat.id)] = {"action": "settings_monitor_interval"}
+        await update.message.reply_text(
+            "알림간격을 숫자와 단위로 입력해주세요.\n"
+            "예: `15초`, `1분`, `5m`, `3600`\n"
+            f"허용 범위: {format_interval(MIN_MONITOR_INTERVAL_SECONDS)} ~ "
+            f"{format_interval(MAX_MONITOR_INTERVAL_SECONDS)}",
+            parse_mode="Markdown",
+        )
+        return
+
+    set_setting(MONITOR_INTERVAL_SETTING_KEY, str(seconds))
+    if context.job_queue:
+        schedule_track_job(
+            context.job_queue,
+            seconds,
+            {"misfire_grace_time": 30},
+            first=seconds,
+        )
+    await update.message.reply_text(
+        "✅ 모니터링 알림간격을 저장했습니다.\n"
+        f"새 간격: *{format_interval(seconds)}*",
+        parse_mode="Markdown",
+        reply_markup=MAIN_KEYBOARD,
+    )
 
 
 async def _build_portfolio_lines(active: list) -> list[str]:
@@ -1027,6 +1153,9 @@ async def message_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if action == "stock_analysis":
             await cmd_stock_analysis(update, text)
             return
+        if action == "settings_monitor_interval":
+            await handle_monitor_interval_input(update, context, text)
+            return
 
     # ── 일반 라우팅 ──
     if keyword in {"AI추천", "추천"}:
@@ -1072,6 +1201,8 @@ async def message_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
     elif keyword == "도움말":
         await cmd_help(update, context)
+    elif keyword == "설정":
+        await cmd_settings(update)
     else:
         await update.message.reply_text(
             HELP_TEXT, parse_mode="Markdown", reply_markup=MAIN_KEYBOARD
@@ -1360,7 +1491,8 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_router))
 
     jk = {"misfire_grace_time": 30}  # 30초 이내 지연은 경고 없이 실행
-    app.job_queue.run_repeating(track_job,          interval=15,   first=15,  job_kwargs=jk)
+    monitor_interval = get_monitor_interval_seconds()
+    schedule_track_job(app.job_queue, monitor_interval, jk, first=monitor_interval)
     app.job_queue.run_repeating(health_job,         interval=300,  first=60,  job_kwargs=jk)
     app.job_queue.run_repeating(auto_recommend_job, interval=1800, first=120, job_kwargs=jk)
     app.job_queue.run_once(startup_notify, when=3)
