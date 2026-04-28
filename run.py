@@ -36,6 +36,8 @@ LLM_MODEL = "openai/gpt-5-mini-2025-08-07"
 LLM_KEY   = os.environ.get("LLM_KEY", "sk-gapk-6z3jLdHWOoztTgupT9OgLA3fU-QcKSY1")
 
 DB_PATH = "quant_scalp.db"
+LLM_TIMEOUT_SECONDS = 90
+LLM_MAX_ATTEMPTS = 2
 DEFAULT_MONITOR_INTERVAL_SECONDS = 15
 MIN_MONITOR_INTERVAL_SECONDS = 5
 MAX_MONITOR_INTERVAL_SECONDS = 24 * 60 * 60
@@ -59,37 +61,47 @@ logging.basicConfig(
 
 def _llm_call(system: str, user: str, max_tokens: int = 1000) -> str:
     """동기 LLM 호출 (requests)"""
-    try:
-        res = requests.post(
-            LLM_URL,
-            headers={"Authorization": f"Bearer {LLM_KEY}", "Content-Type": "application/json"},
-            json={
-                "model": LLM_MODEL,
-                "messages": [
-                    {"role": "user", "content": f"{system}\n\n{user}"},
-                ],
-                "max_completion_tokens": max_tokens,
-            },
-            timeout=30,
-        )
-        data = res.json()
-        if "choices" not in data:
-            err = data.get("error", {})
-            msg = err.get("message", str(data))
-            print(f"[LLM] 오류 응답: {msg}")
-            return f"⚠️ LLM 오류\n{msg}"
-        choice = data["choices"][0]
-        content = choice.get("message", {}).get("content") or ""
-        refusal = choice.get("message", {}).get("refusal") or ""
-        if not content and refusal:
-            print(f"[LLM] 거부 응답: {refusal}")
-            return f"⚠️ {refusal}"
-        if not content:
-            print(f"[LLM] 빈 응답. finish_reason={choice.get('finish_reason')} full={data}")
-        return content.strip()
-    except Exception as e:
-        print(f"[LLM] 오류: {e}")
-        return f"⚠️ LLM 오류\n{e}"
+    payload = {
+        "model": LLM_MODEL,
+        "messages": [
+            {"role": "user", "content": f"{system}\n\n{user}"},
+        ],
+        "max_completion_tokens": max_tokens,
+    }
+
+    last_error = None
+    for attempt in range(1, LLM_MAX_ATTEMPTS + 1):
+        try:
+            res = requests.post(
+                LLM_URL,
+                headers={"Authorization": f"Bearer {LLM_KEY}", "Content-Type": "application/json"},
+                json=payload,
+                timeout=(10, LLM_TIMEOUT_SECONDS),
+            )
+            data = res.json()
+            if "choices" not in data:
+                err = data.get("error", {})
+                msg = err.get("message", str(data))
+                print(f"[LLM] 오류 응답: {msg}")
+                return f"⚠️ LLM 오류\n{msg}"
+            choice = data["choices"][0]
+            content = choice.get("message", {}).get("content") or ""
+            refusal = choice.get("message", {}).get("refusal") or ""
+            if not content and refusal:
+                print(f"[LLM] 거부 응답: {refusal}")
+                return f"⚠️ {refusal}"
+            if not content:
+                print(f"[LLM] 빈 응답. finish_reason={choice.get('finish_reason')} full={data}")
+            return content.strip()
+        except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
+            last_error = e
+            print(f"[LLM] 네트워크 오류 {attempt}/{LLM_MAX_ATTEMPTS}: {e}")
+            continue
+        except Exception as e:
+            print(f"[LLM] 오류: {e}")
+            return f"⚠️ LLM 오류\n{e}"
+
+    return "⚠️ LLM 응답이 지연되고 있습니다. 잠시 후 다시 시도해주세요."
 
 
 async def llm(system: str, user: str, max_tokens: int = 1000) -> str:
