@@ -15,7 +15,7 @@ import requests
 import pandas as pd
 from bs4 import BeautifulSoup
 from telegram import Update
-from telegram.ext import Application, ContextTypes, CommandHandler
+from telegram.ext import Application, ContextTypes, CommandHandler, MessageHandler, filters
 
 # ── 설정 ──────────────────────────────────────────────────────────────
 
@@ -400,12 +400,14 @@ def calculate_sell_score(stock_info: dict, candles: list, buy_price: float) -> d
 HELP_TEXT = (
     "📈 *QuantScalpBot* 명령어\n"
     "─────────────────────\n"
-    "/추천 - 매수 추천 종목 TOP 5\n"
-    "/매수 종목명 매수가 - 매수 등록 및 모니터링\n"
-    "/상태 - 전체 추적 종목 현황\n"
-    "/상태 종목명 - 특정 종목 상세 현황\n"
-    "/종료 종목명 - 종목 추적 중단\n"
-    "/도움말 - 이 메시지"
+    "텍스트로 입력하세요 (/ 없이):\n\n"
+    "`추천` - 매수 추천 종목 TOP 5\n"
+    "`매수 종목명 매수가` - 매수 등록 및 모니터링\n"
+    "`상태` - 전체 추적 종목 현황\n"
+    "`상태 종목명` - 특정 종목 상세 현황\n"
+    "`종료 종목명` - 종목 추적 중단\n"
+    "`도움말` - 이 메시지\n\n"
+    "예시: `매수 삼성전자 71200`"
 )
 
 
@@ -454,7 +456,7 @@ async def cmd_recommend(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_buy(update: Update, context: ContextTypes.DEFAULT_TYPE):
     args = context.args
     if len(args) < 2:
-        await update.message.reply_text("사용법: /매수 종목명 매수가\n예: /매수 삼성전자 71200")
+        await update.message.reply_text("사용법: 매수 종목명 매수가\n예: 매수 삼성전자 71200")
         return
     name = args[0]
     try:
@@ -520,10 +522,33 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_close(update: Update, context: ContextTypes.DEFAULT_TYPE):
     args = context.args
     if not args:
-        await update.message.reply_text("사용법: /종료 종목명")
+        await update.message.reply_text("사용법: 종료 종목명")
         return
     close_stock(args[0])
     await update.message.reply_text(f"🛑 {args[0]} 추적을 종료했습니다.")
+
+
+async def message_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """한글 텍스트 메시지를 명령어로 라우팅"""
+    text = update.message.text.strip()
+    parts = text.split()
+    keyword = parts[0] if parts else ""
+
+    if keyword == "추천":
+        await cmd_recommend(update, context)
+    elif keyword == "매수":
+        context.args = parts[1:]
+        await cmd_buy(update, context)
+    elif keyword == "상태":
+        context.args = parts[1:]
+        await cmd_status(update, context)
+    elif keyword == "종료":
+        context.args = parts[1:]
+        await cmd_close(update, context)
+    elif keyword == "도움말":
+        await cmd_help(update, context)
+    else:
+        await update.message.reply_text(HELP_TEXT, parse_mode="Markdown")
 
 
 # ── 주기 작업 (15초) ──────────────────────────────────────────────────
@@ -563,15 +588,10 @@ def main():
     print("✅ DB 초기화 완료")
 
     app = Application.builder().token(TOKEN).build()
-    for handler in [
-        CommandHandler("start",  cmd_start),
-        CommandHandler("도움말", cmd_help),
-        CommandHandler("추천",   cmd_recommend),
-        CommandHandler("매수",   cmd_buy),
-        CommandHandler("상태",   cmd_status),
-        CommandHandler("종료",   cmd_close),
-    ]:
-        app.add_handler(handler)
+    app.add_handler(CommandHandler("start", cmd_start))
+    app.add_handler(CommandHandler("help",  cmd_help))
+    # 한글 명령어는 텍스트 메시지로 처리 (텔레그램은 영문 명령어만 허용)
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_router))
 
     app.job_queue.run_repeating(track_job, interval=15, first=15)
 
