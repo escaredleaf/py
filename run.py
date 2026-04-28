@@ -846,16 +846,16 @@ async def health_job(context: ContextTypes.DEFAULT_TYPE):
                 else:
                     # 장 외 시간 또는 데이터 부족 → 시가 대비 현재가로 판단
                     open_price = info.get("open", 0)
-                    if open_price and open_price > 0:
-                        diff = (cur - open_price) / open_price * 100
-                        if diff > 0.3:
-                            trend = f"↑ 시가 대비 +{diff:.1f}%"
-                        elif diff < -0.3:
-                            trend = f"↓ 시가 대비 {diff:.1f}%"
-                        else:
-                            trend = f"→ 시가 대비 {diff:+.1f}%"
+                    # 시가 있으면 시가 대비, 없으면 매수가 대비로 추이 표시
+                    base_price = open_price if (open_price and open_price > 0) else buy_price
+                    base_label = "시가" if (open_price and open_price > 0) else "매수가"
+                    diff = (cur - base_price) / base_price * 100
+                    if diff > 0.3:
+                        trend = f"↑ {base_label} 대비 +{diff:.1f}%"
+                    elif diff < -0.3:
+                        trend = f"↓ {base_label} 대비 {diff:.1f}%"
                     else:
-                        trend = "장 외 시간"
+                        trend = f"→ {base_label} 대비 {diff:+.1f}%"
 
                 lines.append(
                     f"\n*{stock['name']}* ({code})\n"
