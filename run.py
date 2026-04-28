@@ -627,7 +627,7 @@ async def health_job(context: ContextTypes.DEFAULT_TYPE):
                 gap = (cur - buy_price) / buy_price * 100
                 gap_emoji = "📈" if gap >= 0 else "📉"
 
-                # 추이: 최근 5봉 종가 방향
+                # 추이: 1분봉 5개 이상이면 봉 방향, 없으면 시가 대비 현재가로 판단
                 if len(candles) >= 5:
                     closes = [c["close"] for c in candles[-5:]]
                     ups   = sum(1 for i in range(1, len(closes)) if closes[i] > closes[i-1])
@@ -639,7 +639,18 @@ async def health_job(context: ContextTypes.DEFAULT_TYPE):
                     else:
                         trend = "→ 횡보"
                 else:
-                    trend = "데이터 부족"
+                    # 장 외 시간 또는 데이터 부족 → 시가 대비 현재가로 판단
+                    open_price = info.get("open", 0)
+                    if open_price and open_price > 0:
+                        diff = (cur - open_price) / open_price * 100
+                        if diff > 0.3:
+                            trend = f"↑ 시가 대비 +{diff:.1f}%"
+                        elif diff < -0.3:
+                            trend = f"↓ 시가 대비 {diff:.1f}%"
+                        else:
+                            trend = f"→ 시가 대비 {diff:+.1f}%"
+                    else:
+                        trend = "장 외 시간"
 
                 lines.append(
                     f"\n*{stock['name']}* ({code})\n"
