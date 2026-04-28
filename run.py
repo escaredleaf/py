@@ -60,7 +60,6 @@ def _llm_call(system: str, user: str, max_tokens: int = 250) -> str:
                     {"role": "user",   "content": user},
                 ],
                 "max_completion_tokens": max_tokens,
-                "temperature": 0.3,
             },
             timeout=15,
         )
