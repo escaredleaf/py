@@ -851,10 +851,6 @@ async def message_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.args = parts
         await cmd_close(update, context)
         return
-    if pending == "status_code":
-        context.args = parts
-        await cmd_status(update, context)
-        return
     if pending == "stock_analysis":
         await cmd_stock_analysis(update, text)
         return
@@ -878,16 +874,9 @@ async def message_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif keyword == "상태":
         if len(parts) >= 2:
             context.args = parts[1:]
-            await cmd_status(update, context)
         else:
-            # 전체 목록 먼저 보여주고 상세 조회 여부 물음
-            await cmd_status(update, context)
-            active = get_active_stocks()
-            if active:
-                _pending[cid] = "status_code"
-                await update.message.reply_text(
-                    "특정 종목 상세 조회: 종목코드를 입력하세요.\n(취소: 다른 버튼 누르기)",
-                )
+            context.args = []
+        await cmd_status(update, context)
     elif keyword == "종료":
         if len(parts) >= 2:
             context.args = parts[1:]
