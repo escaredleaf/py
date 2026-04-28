@@ -64,10 +64,17 @@ def _llm_call(system: str, user: str, max_tokens: int = 250) -> str:
             },
             timeout=15,
         )
-        return res.json()["choices"][0]["message"]["content"].strip()
+        data = res.json()
+        if "choices" not in data:
+            msg = f"[LLM] 예상치 못한 응답: {data}"
+            print(msg)
+            err = data.get("error", {})
+            return f"⚠️ LLM 오류\n{err.get('message', str(data))}"
+        return data["choices"][0]["message"]["content"].strip()
     except Exception as e:
-        print(f"[LLM] 오류: {e}")
-        return ""
+        msg = f"[LLM] 오류: {e}"
+        print(msg)
+        return f"⚠️ LLM 오류\n{e}"
 
 
 async def llm(system: str, user: str, max_tokens: int = 250) -> str:
