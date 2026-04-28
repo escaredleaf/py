@@ -313,6 +313,55 @@ def calculate_buy_score(stock: dict, candles: list) -> dict:
 
 # ── 매도 점수 계산 ────────────────────────────────────────────────────
 
+def calculate_new_score(stock: dict, candles: list) -> dict:
+    """
+    신규 모멘텀 점수 (0~100) - 방금 막 움직이기 시작한 종목 탐색
+      1. 직전까지 거래량 평탄 → 최근 3봉 폭발 (35점)
+      2. 최근 3봉 연속 양봉    (35점)
+      3. 등락률 0.5~5% 초기 구간 (30점)
+    """
+    score = 0
+    reasons: list[str] = []
+
+    if len(candles) < 20:
+        return {"score": 0, "reasons": ["데이터 부족"]}
+
+    price = stock.get("price", 0)
+    if not (2_000 <= price <= 30_000):
+        return {"score": 0, "reasons": ["가격 범위 제외"]}
+
+    df = pd.DataFrame(candles)
+
+    # 1. 직전 평탄 → 최근 폭발 (신규성 핵심)
+    flat_vol  = df["volume"].iloc[-20:-3].mean()
+    burst_vol = df["volume"].iloc[-3:].mean()
+    if flat_vol > 0:
+        ratio = burst_vol / flat_vol
+        if ratio >= 5.0:
+            score += 35; reasons.append(f"거래량 {ratio:.0f}배 폭발 신규")
+        elif ratio >= 3.0:
+            score += 20; reasons.append(f"거래량 {ratio:.0f}배 급등 신규")
+        elif ratio >= 2.0:
+            score += 10
+
+    # 2. 최근 3봉 연속 양봉 (시작 신호)
+    if len(df) >= 3:
+        last3 = df.iloc[-3:]
+        if all(last3["close"].values[i] > last3["open"].values[i] for i in range(3)):
+            score += 35; reasons.append("3봉 연속 양봉")
+        elif last3["close"].iloc[-1] > last3["open"].iloc[-1]:
+            score += 15
+
+    # 3. 등락률 초기 구간 0.5~5% (과열 전)
+    rate = stock.get("change_rate", 0)
+    if 0.5 <= rate <= 5.0:
+        score += 30; reasons.append(f"초기 상승 +{rate:.1f}%")
+    elif rate > 5.0:
+        score -= 10; reasons.append("이미 급등")
+
+    return {"score": min(100, max(0, score)), "reasons": reasons}
+
+
 def _vwap(candles: list) -> float:
     tv  = sum(c["close"] * c["volume"] for c in candles)
     vol = sum(c["volume"] for c in candles)
@@ -395,7 +444,8 @@ HELP_TEXT = (
     "📈 *QuantScalpBot* 명령어\n"
     "─────────────────────\n"
     "텍스트로 입력하세요 (/ 없이):\n\n"
-    "`추천` - 매수 추천 종목 TOP 5\n"
+    "`추천` - 모멘텀 강한 종목 TOP 5\n"
+    "`신규추천` - 방금 움직이기 시작한 종목 TOP 5\n"
     "`매수 종목코드 매수가` - 매수 등록 및 모니터링\n"
     "`상태` - 전체 추적 종목 현황\n"
     "`상태 종목코드` - 특정 종목 상세 현황\n"
@@ -529,6 +579,8 @@ async def message_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if keyword == "추천":
         await cmd_recommend(update, context)
+    elif keyword == "신규추천":
+        await cmd_new_recommend(update, context)
     elif keyword == "매수":
         context.args = parts[1:]
         await cmd_buy(update, context)
@@ -542,6 +594,87 @@ async def message_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await cmd_help(update, context)
     else:
         await update.message.reply_text(HELP_TEXT, parse_mode="Markdown")
+
+
+async def cmd_new_recommend(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("🆕 신규 모멘텀 종목 스캔 중... (20~30초 소요)")
+    try:
+        results = []
+        for stock in scrape_top_stocks(limit=40):
+            code = stock.get("code")
+            if not code:
+                continue
+            sd = calculate_new_score(stock, get_candles(code, count=80))
+            if sd["score"] >= 70:
+                results.append({**stock, **sd})
+
+        results.sort(key=lambda x: x["score"], reverse=True)
+        top5 = results[:5]
+
+        if not top5:
+            await update.message.reply_text("⚠️ 현재 신규 모멘텀 종목이 없습니다.")
+            return
+
+        lines = ["🆕 *신규 모멘텀 TOP 5*\n" + "─" * 22]
+        for i, s in enumerate(top5, 1):
+            lines.append(
+                f"{i}. *{s['name']}* ({s['market']})\n"
+                f"   현재가 {s['price']:,}원  등락 {s['change_rate']:+.1f}%\n"
+                f"   점수 {s['score']}점 | {', '.join(s['reasons'])}"
+            )
+        await update.message.reply_text("\n\n".join(lines), parse_mode="Markdown")
+    except Exception as e:
+        await update.message.reply_text(f"오류: {e}")
+
+
+async def _send_recommend(bot, chat_id: str, label: str):
+    """추천 결과를 공통으로 전송"""
+    results = []
+    for stock in scrape_top_stocks(limit=40):
+        code = stock.get("code")
+        if not code:
+            continue
+        candles = get_candles(code, count=80)
+        sd = calculate_new_score(stock, candles)
+        if sd["score"] >= 70:
+            results.append({**stock, **sd})
+
+    results.sort(key=lambda x: x["score"], reverse=True)
+    top5 = results[:5]
+
+    if not top5:
+        return
+
+    lines = [f"🤖 *{label}*\n" + "─" * 22]
+    for i, s in enumerate(top5, 1):
+        lines.append(
+            f"{i}. *{s['name']}* ({s['market']})\n"
+            f"   현재가 {s['price']:,}원  등락 {s['change_rate']:+.1f}%\n"
+            f"   점수 {s['score']}점 | {', '.join(s['reasons'])}"
+        )
+    await bot.send_message(
+        chat_id=int(chat_id),
+        text="\n\n".join(lines),
+        parse_mode="Markdown",
+    )
+
+
+async def auto_recommend_job(context: ContextTypes.DEFAULT_TYPE):
+    """30분마다 장중 자동 신규 종목 추천"""
+    chat_id = get_setting("chat_id")
+    if not chat_id:
+        return
+
+    # 장중 시간만 실행 (KST 09:05 ~ 15:25)
+    now = datetime.now()
+    if not (9 * 60 + 5 <= now.hour * 60 + now.minute <= 15 * 60 + 25):
+        return
+
+    try:
+        label = f"자동 신규추천 {now.strftime('%H:%M')}"
+        await _send_recommend(context.bot, chat_id, label)
+    except Exception as e:
+        print(f"[auto_recommend_job] 오류: {e}")
 
 
 # ── 주기 작업 (15초) ──────────────────────────────────────────────────
@@ -681,8 +814,9 @@ def main():
     # 한글 명령어는 텍스트 메시지로 처리 (텔레그램은 영문 명령어만 허용)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_router))
 
-    app.job_queue.run_repeating(track_job,  interval=15,  first=15)
-    app.job_queue.run_repeating(health_job, interval=300, first=60)
+    app.job_queue.run_repeating(track_job,           interval=15,   first=15)
+    app.job_queue.run_repeating(health_job,          interval=300,  first=60)
+    app.job_queue.run_repeating(auto_recommend_job,  interval=1800, first=120)
 
     print("🚀 QuantScalpBot 가동 중 (Ctrl+C 로 종료)")
     app.run_polling(allowed_updates=["message"])
