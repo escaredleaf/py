@@ -602,6 +602,22 @@ HELP_TEXT = (
 )
 
 LEGACY_BUTTONS = {"추천", "매수", "상태", "종료"}
+BUTTON_KEYWORDS = {
+    "AI추천",
+    "추천",
+    "신규추천",
+    "종목등록",
+    "매수",
+    "현재상황",
+    "상태",
+    "종목삭제",
+    "종료",
+    "종목분석",
+    "도움말",
+    "설정",
+    "메시지 알림받기",
+    "메시지 알림중지",
+}
 
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1033,51 +1049,33 @@ async def _build_portfolio_lines(active: list) -> list[str]:
                 chg5  = f"{(closes[-1]-closes[-5])/closes[-5]*100:+.1f}%"
                 chg10 = f"{(closes[-1]-closes[-min(10,len(closes))])/closes[-min(10,len(closes))]*100:+.1f}%"
 
-            expert_prompt = (
-                f"종목: {stock['name']} ({code})\n"
-                f"매수가: {buy_price:,}원 / 현재가: {cur:,}원 / 수익률: {gap:+.2f}%\n"
-                f"추이: {trend}\n"
-                f"5일변화: {chg5}  10일변화: {chg10}\n\n"
-                "위 데이터와 최신 시장 상황·뉴스를 종합해 "
-                "추가매수·보유·매도 중 하나를 명확히 제시하고 "
-                "핵심 사유를 2줄 이내로 설명하세요. "
-                "첫 줄: 판단(이모지 포함), 둘째 줄: 사유."
-            )
-            print(f"[LLM] {stock['name']} 호출 시작")
-            opinion = _llm_call(
-                "당신은 한국 주식 단타 전문가입니다. 간결·명확하게 답하세요.",
-                expert_prompt,
-                800,
-            )
-            print(f"[LLM] {stock['name']} 결과: {repr(opinion[:80]) if opinion else repr(opinion)}")
-
             lines.append(
                 f"\n*{stock['name']}* ({code})\n"
                 f"  매수가: {buy_price:,.0f}원\n"
                 f"  현재가: {cur:,.0f}원\n"
                 f"  {gap_emoji} 갭: {gap:+.2f}%\n"
-                f"  추이: {trend}\n"
-                f"  💬 {opinion or '분석 불가'}"
+                f"  추이: {trend}"
             )
             stock_lines_for_llm.append(
                 f"{stock['name']}: 매수가 {buy_price:,.0f}원, "
-                f"현재가 {cur:,.0f}원, 수익률 {gap:+.2f}%"
+                f"현재가 {cur:,.0f}원, 수익률 {gap:+.2f}%, "
+                f"추이 {trend}, 5일 {chg5 or 'N/A'}, 10일 {chg10 or 'N/A'}"
             )
         except Exception as e:
             print(f"[포트폴리오] {stock['name']} 예외: {type(e).__name__}: {e}")
             lines.append(f"\n*{stock['name']}* ({code}): 조회 실패")
 
-    # AI 시황 요약 (장중에만)
-    now_h = now_kst().hour * 60 + now_kst().minute
-    if stock_lines_for_llm and 9 * 60 + 5 <= now_h <= 15 * 60 + 25:
+    if stock_lines_for_llm:
         commentary = await llm(
             "당신은 한국 주식 단타 전문가입니다. 간결하게 핵심만 답하세요.",
-            "보유 종목 현황입니다. 지금 장 분위기와 대응 방향을 2문장으로 조언해주세요:\n"
+            "보유 종목 현황입니다. 각 종목별로 추가매수/보유/매도 중 하나를 제시하고, "
+            "마지막에 전체 포트폴리오 대응 방향을 2문장으로 요약해주세요. "
+            "종목별 답변은 한 줄씩 작성하세요:\n"
             + "\n".join(stock_lines_for_llm),
-            max_tokens=800,
+            max_tokens=1200,
         )
         if commentary:
-            lines.append(f"\n🤖 *AI 시황*\n{commentary}")
+            lines.append(f"\n🤖 *AI 종합 분석*\n{commentary}")
 
     return lines
 
@@ -1225,9 +1223,18 @@ async def message_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
     parts   = text.split()
     keyword = parts[0] if parts else ""
     cid     = str(update.effective_chat.id)
+    button_keyword = keyword in BUTTON_KEYWORDS
+    command_has_args = len(parts) > 1
 
     # ── 다단계 입력 대기 중인 경우 ──
     pending = _pending.pop(cid, None)
+    if pending and button_keyword:
+        await update.message.reply_text(
+            "이전 입력 대기를 취소하고 선택한 버튼을 실행합니다.",
+            reply_markup=MAIN_KEYBOARD,
+        )
+        pending = None
+
     if pending:
         if text == "취소":
             await update.message.reply_text("입력을 취소하고 대기 내용을 삭제했습니다.", reply_markup=MAIN_KEYBOARD)
@@ -1422,6 +1429,7 @@ async def track_job(context: ContextTypes.DEFAULT_TYPE):
         return
     if not is_notification_enabled():
         return
+    sell_signals = []
     for stock in get_active_stocks():
         code = stock.get("code")
         if not code:
@@ -1432,24 +1440,48 @@ async def track_job(context: ContextTypes.DEFAULT_TYPE):
                 continue
             sd = calculate_sell_score(info, get_candles(code, count=80), stock["buy_price"])
             if sd["score"] >= 60:
-                commentary = await llm(
-                    "당신은 한국 주식 단타 전문가입니다. 한 문장으로 핵심만 답하세요.",
-                    f"{stock['name']} 매도 신호: {', '.join(sd['reasons'])}. "
-                    f"수익률 {sd['pnl']:+.2f}%. 지금 매도해야 할까요?",
-                    max_tokens=800,
-                )
-                text = (
-                    f"⚠️ *매도 신호* {stock['name']}  (점수: {sd['score']})\n"
-                    f"현재가: {info['price']:,.0f}원  수익률: {sd['pnl']:+.2f}%\n"
-                    f"사유: {', '.join(sd['reasons'])}"
-                )
-                if commentary:
-                    text += f"\n🤖 {commentary}"
-                await context.bot.send_message(
-                    chat_id=int(chat_id), text=text, parse_mode="Markdown"
-                )
+                sell_signals.append({
+                    "name": stock["name"],
+                    "code": code,
+                    "score": sd["score"],
+                    "price": info["price"],
+                    "pnl": sd["pnl"],
+                    "reasons": sd["reasons"],
+                })
         except Exception as e:
             print(f"[track_job] {stock['name']} 오류: {e}")
+
+    if not sell_signals:
+        return
+
+    lines = ["⚠️ *매도 신호 감지*"]
+    for signal in sell_signals:
+        lines.append(
+            f"\n*{signal['name']}* ({signal['code']})  점수: {signal['score']}\n"
+            f"현재가: {signal['price']:,.0f}원  수익률: {signal['pnl']:+.2f}%\n"
+            f"사유: {', '.join(signal['reasons'])}"
+        )
+
+    signal_summary = "\n".join(
+        f"- {s['name']}({s['code']}): 점수 {s['score']}, 현재가 {s['price']:,.0f}원, "
+        f"수익률 {s['pnl']:+.2f}%, 사유: {', '.join(s['reasons'])}"
+        for s in sell_signals
+    )
+    commentary = await llm(
+        "당신은 한국 주식 단타 전문가입니다. 간결하고 실행 중심으로 답하세요.",
+        "다음 종목들에 매도 신호가 감지됐습니다. "
+        "각 종목별로 매도/보유/부분매도 중 하나와 핵심 이유를 한 줄씩 제시하세요:\n"
+        + signal_summary,
+        max_tokens=1200,
+    )
+    if commentary:
+        lines.append(f"\n🤖 *AI 일괄 판단*\n{commentary}")
+
+    await context.bot.send_message(
+        chat_id=int(chat_id),
+        text="\n".join(lines),
+        parse_mode="Markdown",
+    )
 
 
 def _analyze_trend(cur: int, daily: list, buy_price: float, open_price: int) -> str:
