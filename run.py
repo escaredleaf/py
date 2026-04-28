@@ -549,7 +549,7 @@ MAIN_KEYBOARD = ReplyKeyboardMarkup(
     [
         [KeyboardButton("AI추천"),   KeyboardButton("종목등록")],
         [KeyboardButton("현재상황"), KeyboardButton("종목분석")],
-        [KeyboardButton("종료"),     KeyboardButton("도움말")],
+        [KeyboardButton("종목삭제"), KeyboardButton("도움말")],
     ],
     resize_keyboard=True,
 )
@@ -568,7 +568,7 @@ HELP_TEXT = (
     "`종목등록` - 종목코드와 매수금액을 단계별 입력 후 등록\n"
     "`현재상황` - 전체 추적 종목 현황\n"
     "`현재상황 종목코드` - 특정 종목 상세 현황\n"
-    "`종료 종목코드` - 종목 추적 중단\n"
+    "`종목삭제 종목코드` - 종목 추적 중단\n"
     "`종목분석 종목명또는코드` - IB 스타일 심층 분석\n"
     "`도움말` - 이 메시지\n\n"
     "예시: `종목등록 005930 71200`  (삼성전자)\n"
@@ -994,7 +994,7 @@ async def cmd_stock_analysis(update: Update, query: str):
 async def cmd_close(update: Update, context: ContextTypes.DEFAULT_TYPE):
     args = context.args
     if not args:
-        await update.message.reply_text("사용법: 종료 종목코드\n예: 종료 005930")
+        await update.message.reply_text("사용법: 종목삭제 종목코드\n예: 종목삭제 005930")
         return
     code = args[0].strip()
     name = get_name_by_code(code)
@@ -1046,7 +1046,7 @@ async def message_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             context.args = []
         await cmd_status(update, context)
-    elif keyword == "종료":
+    elif keyword in {"종목삭제", "종료"}:
         if len(parts) >= 2:
             context.args = parts[1:]
             await cmd_close(update, context)
