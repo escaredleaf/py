@@ -69,12 +69,14 @@ def _llm_call(system: str, user: str, max_tokens: int = 250) -> str:
             timeout=15,
         )
         data = res.json()
+        print(f"[LLM raw] {data}")
         if "choices" not in data:
-            msg = f"[LLM] 예상치 못한 응답: {data}"
-            print(msg)
             err = data.get("error", {})
             return f"⚠️ LLM 오류\n{err.get('message', str(data))}"
-        return data["choices"][0]["message"]["content"].strip()
+        choice = data["choices"][0]
+        content = choice.get("message", {}).get("content") or ""
+        print(f"[LLM finish_reason] {choice.get('finish_reason')} | content: {repr(content[:100])}")
+        return content.strip()
     except Exception as e:
         msg = f"[LLM] 오류: {e}"
         print(msg)
