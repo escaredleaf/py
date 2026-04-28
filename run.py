@@ -11,6 +11,8 @@ from contextlib import contextmanager
 from datetime import datetime
 from urllib.parse import quote
 
+import asyncio
+
 import requests
 import pandas as pd
 from bs4 import BeautifulSoup
@@ -23,6 +25,10 @@ TOKEN = os.environ.get(
     "TELEGRAM_TOKEN",
     "8751027463:AAEt_Xg7nR0AAVJyXYkyUgkt6BXFbC_x28o",
 )
+
+LLM_URL   = "https://api.platform.a15t.com/v1/chat/completions"
+LLM_MODEL = "openai/gpt-5-mini-2025-08-07"
+LLM_KEY   = os.environ.get("LLM_KEY", "sk-gapk-6z3jLdHWOoztTgupT9OgLA3fU-QcKSY1")
 
 DB_PATH = "quant_scalp.db"
 
@@ -38,6 +44,37 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(message)s",
     level=logging.WARNING,
 )
+
+# ── LLM ──────────────────────────────────────────────────────────────
+
+def _llm_call(system: str, user: str, max_tokens: int = 250) -> str:
+    """동기 LLM 호출 (requests)"""
+    try:
+        res = requests.post(
+            LLM_URL,
+            headers={"Authorization": f"Bearer {LLM_KEY}", "Content-Type": "application/json"},
+            json={
+                "model": LLM_MODEL,
+                "messages": [
+                    {"role": "system", "content": system},
+                    {"role": "user",   "content": user},
+                ],
+                "max_tokens": max_tokens,
+                "temperature": 0.3,
+            },
+            timeout=15,
+        )
+        return res.json()["choices"][0]["message"]["content"].strip()
+    except Exception as e:
+        print(f"[LLM] 오류: {e}")
+        return ""
+
+
+async def llm(system: str, user: str, max_tokens: int = 250) -> str:
+    """비동기 래퍼 - 이벤트 루프 블로킹 방지"""
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, _llm_call, system, user, max_tokens)
+
 
 # ── DB ────────────────────────────────────────────────────────────────
 
@@ -493,6 +530,20 @@ async def cmd_recommend(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"   점수 {s['score']}점 | {', '.join(s['reasons'])}"
             )
         await update.message.reply_text("\n\n".join(lines), parse_mode="Markdown")
+
+        # LLM 종합 분석
+        stock_summary = "\n".join(
+            f"- {s['name']}({s['market']}): 현재가 {s['price']:,}원, "
+            f"등락 {s['change_rate']:+.1f}%, 사유: {', '.join(s['reasons'])}"
+            for s in top5
+        )
+        commentary = await llm(
+            "당신은 한국 주식 단타 전문가입니다. 간결하고 핵심만 답하세요.",
+            f"다음 종목들이 단타 추천됐습니다. 시장 맥락과 주의사항을 2~3문장으로 분석해주세요:\n{stock_summary}",
+            max_tokens=200,
+        )
+        if commentary:
+            await update.message.reply_text(f"🤖 *AI 분석*\n{commentary}", parse_mode="Markdown")
     except Exception as e:
         await update.message.reply_text(f"오류: {e}")
 
@@ -623,6 +674,20 @@ async def cmd_new_recommend(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"   점수 {s['score']}점 | {', '.join(s['reasons'])}"
             )
         await update.message.reply_text("\n\n".join(lines), parse_mode="Markdown")
+
+        # LLM 신규 모멘텀 해설
+        stock_summary = "\n".join(
+            f"- {s['name']}: 현재가 {s['price']:,}원, 등락 {s['change_rate']:+.1f}%, "
+            f"신호: {', '.join(s['reasons'])}"
+            for s in top5
+        )
+        commentary = await llm(
+            "당신은 한국 주식 단타 전문가입니다. 간결하고 핵심만 답하세요.",
+            f"방금 모멘텀이 시작된 종목들입니다. 진입 시 유의사항을 2~3문장으로 설명해주세요:\n{stock_summary}",
+            max_tokens=200,
+        )
+        if commentary:
+            await update.message.reply_text(f"🤖 *AI 분석*\n{commentary}", parse_mode="Markdown")
     except Exception as e:
         await update.message.reply_text(f"오류: {e}")
 
@@ -694,14 +759,21 @@ async def track_job(context: ContextTypes.DEFAULT_TYPE):
                 continue
             sd = calculate_sell_score(info, get_candles(code, count=80), stock["buy_price"])
             if sd["score"] >= 60:
+                commentary = await llm(
+                    "당신은 한국 주식 단타 전문가입니다. 한 문장으로 핵심만 답하세요.",
+                    f"{stock['name']} 매도 신호: {', '.join(sd['reasons'])}. "
+                    f"수익률 {sd['pnl']:+.2f}%. 지금 매도해야 할까요?",
+                    max_tokens=100,
+                )
+                text = (
+                    f"⚠️ *매도 신호* {stock['name']}  (점수: {sd['score']})\n"
+                    f"현재가: {info['price']:,.0f}원  수익률: {sd['pnl']:+.2f}%\n"
+                    f"사유: {', '.join(sd['reasons'])}"
+                )
+                if commentary:
+                    text += f"\n🤖 {commentary}"
                 await context.bot.send_message(
-                    chat_id=int(chat_id),
-                    text=(
-                        f"⚠️ *매도 신호* {stock['name']}  (점수: {sd['score']})\n"
-                        f"현재가: {info['price']:,.0f}원  수익률: {sd['pnl']:+.2f}%\n"
-                        f"사유: {', '.join(sd['reasons'])}"
-                    ),
-                    parse_mode="Markdown",
+                    chat_id=int(chat_id), text=text, parse_mode="Markdown"
                 )
         except Exception as e:
             print(f"[track_job] {stock['name']} 오류: {e}")
@@ -794,6 +866,28 @@ async def health_job(context: ContextTypes.DEFAULT_TYPE):
                 )
             except Exception as e:
                 lines.append(f"\n*{stock['name']}* ({code}): 조회 실패")
+
+    # LLM 시황 요약 (장중에만)
+    now_h = datetime.now().hour * 60 + datetime.now().minute
+    if 9 * 60 + 5 <= now_h <= 15 * 60 + 25:
+        stock_lines = []
+        for stock in active:
+            info = get_stock_info(stock.get("code", ""))
+            if info:
+                pnl = (info["price"] - stock["buy_price"]) / stock["buy_price"] * 100
+                stock_lines.append(
+                    f"{stock['name']}: 매수가 {stock['buy_price']:,.0f}원, "
+                    f"현재가 {info['price']:,.0f}원, 수익률 {pnl:+.2f}%"
+                )
+        if stock_lines:
+            commentary = await llm(
+                "당신은 한국 주식 단타 전문가입니다. 간결하게 핵심만 답하세요.",
+                f"보유 종목 현황입니다. 지금 장 분위기와 대응 방향을 2문장으로 조언해주세요:\n"
+                + "\n".join(stock_lines),
+                max_tokens=150,
+            )
+            if commentary:
+                lines.append(f"\n🤖 *AI 시황*\n{commentary}")
 
     await context.bot.send_message(
         chat_id=int(chat_id),
