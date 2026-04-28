@@ -232,6 +232,37 @@ def get_stock_info(code: str) -> dict | None:
         return None
 
 
+def is_market_open() -> bool:
+    """한국 주식 장중 여부 (평일 09:00~15:30)"""
+    now = datetime.now()
+    if now.weekday() >= 5:
+        return False
+    minutes = now.hour * 60 + now.minute
+    return 9 * 60 <= minutes <= 15 * 60 + 30
+
+
+def _parse_candles(xml_text: str) -> list[dict]:
+    """fchart API XML → 캔들 리스트"""
+    soup = BeautifulSoup(xml_text, "lxml-xml")
+    candles = []
+    for item in soup.select("item"):
+        parts = item.get("data", "").split("|")
+        if len(parts) < 6:
+            continue
+        try:
+            candles.append({
+                "time":   parts[0],
+                "open":   int(parts[1]),
+                "high":   int(parts[2]),
+                "low":    int(parts[3]),
+                "close":  int(parts[4]),
+                "volume": int(parts[5]),
+            })
+        except ValueError:
+            continue
+    return candles
+
+
 def get_candles(code: str, count: int = 80) -> list[dict]:
     """네이버 fchart API로 1분봉 조회"""
     url = (
@@ -240,26 +271,23 @@ def get_candles(code: str, count: int = 80) -> list[dict]:
     )
     try:
         res = requests.get(url, headers=HEADERS, timeout=10)
-        soup = BeautifulSoup(res.text, "lxml-xml")
-        candles = []
-        for item in soup.select("item"):
-            parts = item.get("data", "").split("|")
-            if len(parts) < 6:
-                continue
-            try:
-                candles.append({
-                    "time":   parts[0],
-                    "open":   int(parts[1]),
-                    "high":   int(parts[2]),
-                    "low":    int(parts[3]),
-                    "close":  int(parts[4]),
-                    "volume": int(parts[5]),
-                })
-            except ValueError:
-                continue
-        return candles
+        return _parse_candles(res.text)
     except Exception as e:
         print(f"[collector] get_candles error ({code}): {e}")
+        return []
+
+
+def get_daily_candles(code: str, count: int = 30) -> list[dict]:
+    """네이버 fchart API로 일봉 조회 (장 외 시간용)"""
+    url = (
+        f"https://fchart.stock.naver.com/sise.nhn"
+        f"?symbol={code}&timeframe=day&count={count}&requestType=0"
+    )
+    try:
+        res = requests.get(url, headers=HEADERS, timeout=10)
+        return _parse_candles(res.text)
+    except Exception as e:
+        print(f"[collector] get_daily_candles error ({code}): {e}")
         return []
 
 
@@ -521,22 +549,26 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_recommend(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("📊 종목 스캔 중... (20~30초 소요)")
+    market_open = is_market_open()
+    label_time  = "장중" if market_open else "장 외(전일 일봉 기준)"
+    await update.message.reply_text(f"📊 종목 스캔 중... [{label_time}]")
     try:
+        threshold = 80 if market_open else 55
         results = []
         for stock in scrape_top_stocks(limit=40):
             code = stock.get("code")
             if not code:
                 continue
-            sd = calculate_buy_score(stock, get_candles(code, count=80))
-            if sd["score"] >= 80:
+            candles = get_candles(code, count=80) if market_open else get_daily_candles(code, count=30)
+            sd = calculate_buy_score(stock, candles)
+            if sd["score"] >= threshold:
                 results.append({**stock, **sd})
 
         results.sort(key=lambda x: x["score"], reverse=True)
         top5 = results[:5]
 
         if not top5:
-            await update.message.reply_text("⚠️ 현재 조건(80점↑)을 만족하는 종목이 없습니다.")
+            await update.message.reply_text(f"⚠️ 현재 조건({threshold}점↑)을 만족하는 종목이 없습니다.")
             return
 
         lines = ["🔥 *매수 추천 TOP 5*\n" + "─" * 22]
@@ -713,15 +745,19 @@ async def message_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_new_recommend(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🆕 신규 모멘텀 종목 스캔 중... (20~30초 소요)")
+    market_open = is_market_open()
+    label_time  = "장중" if market_open else "장 외(전일 일봉 기준)"
+    await update.message.reply_text(f"🆕 신규 모멘텀 종목 스캔 중... [{label_time}]")
     try:
+        threshold = 70 if market_open else 50
         results = []
         for stock in scrape_top_stocks(limit=40):
             code = stock.get("code")
             if not code:
                 continue
-            sd = calculate_new_score(stock, get_candles(code, count=80))
-            if sd["score"] >= 70:
+            candles = get_candles(code, count=80) if market_open else get_daily_candles(code, count=30)
+            sd = calculate_new_score(stock, candles)
+            if sd["score"] >= threshold:
                 results.append({**stock, **sd})
 
         results.sort(key=lambda x: x["score"], reverse=True)
@@ -758,15 +794,17 @@ async def cmd_new_recommend(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def _send_recommend(bot, chat_id: str, label: str):
-    """추천 결과를 공통으로 전송"""
+    """추천 결과를 공통으로 전송 (자동 추천 job용)"""
+    market_open = is_market_open()
+    threshold   = 70 if market_open else 50
     results = []
     for stock in scrape_top_stocks(limit=40):
         code = stock.get("code")
         if not code:
             continue
-        candles = get_candles(code, count=80)
+        candles = get_candles(code, count=80) if market_open else get_daily_candles(code, count=30)
         sd = calculate_new_score(stock, candles)
-        if sd["score"] >= 70:
+        if sd["score"] >= threshold:
             results.append({**stock, **sd})
 
     results.sort(key=lambda x: x["score"], reverse=True)
