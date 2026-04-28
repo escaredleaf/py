@@ -666,12 +666,13 @@ async def _build_portfolio_lines(active: list) -> list[str]:
                 "핵심 사유를 2줄 이내로 설명하세요. "
                 "첫 줄: 판단(이모지 포함), 둘째 줄: 사유."
             )
+            print(f"[LLM] {stock['name']} 호출 시작")
             opinion = _llm_call(
                 "당신은 한국 주식 단타 전문가입니다. 간결·명확하게 답하세요.",
                 expert_prompt,
                 120,
             )
-            print(f"[LLM opinion] {stock['name']}: {repr(opinion)}")
+            print(f"[LLM] {stock['name']} 결과: {repr(opinion[:80]) if opinion else repr(opinion)}")
 
             lines.append(
                 f"\n*{stock['name']}* ({code})\n"
@@ -685,7 +686,8 @@ async def _build_portfolio_lines(active: list) -> list[str]:
                 f"{stock['name']}: 매수가 {buy_price:,.0f}원, "
                 f"현재가 {cur:,.0f}원, 수익률 {gap:+.2f}%"
             )
-        except Exception:
+        except Exception as e:
+            print(f"[포트폴리오] {stock['name']} 예외: {type(e).__name__}: {e}")
             lines.append(f"\n*{stock['name']}* ({code}): 조회 실패")
 
     # AI 시황 요약 (장중에만)
