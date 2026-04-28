@@ -1092,12 +1092,37 @@ async def health_job(context: ContextTypes.DEFAULT_TYPE):
                 # ── 추이 분석: 일봉 기반 MA + 기간 변화율 ──
                 trend = _analyze_trend(cur, daily, buy_price, info.get("open", 0))
 
+                # ── LLM 전문가 의견 (추가매수 / 매도 / 보유) ──
+                chg5  = ""
+                chg10 = ""
+                if len(daily) >= 10:
+                    closes = [c["close"] for c in daily]
+                    chg5  = f"{(closes[-1]-closes[-5])/closes[-5]*100:+.1f}%"
+                    chg10 = f"{(closes[-1]-closes[-min(10,len(closes))])/closes[-min(10,len(closes))]*100:+.1f}%"
+
+                expert_prompt = (
+                    f"종목: {stock['name']} ({code})\n"
+                    f"매수가: {buy_price:,}원 / 현재가: {cur:,}원 / 수익률: {gap:+.2f}%\n"
+                    f"추이: {trend}\n"
+                    f"5일변화: {chg5}  10일변화: {chg10}\n\n"
+                    "위 데이터와 최신 시장 상황·뉴스를 종합해 "
+                    "추가매수·보유·매도 중 하나를 명확히 제시하고 "
+                    "핵심 사유를 2줄 이내로 설명하세요. "
+                    "첫 줄: 판단(이모지 포함), 둘째 줄: 사유."
+                )
+                opinion = _llm_call(
+                    "당신은 한국 주식 단타 전문가입니다. 간결·명확하게 답하세요.",
+                    expert_prompt,
+                    max_tokens=120,
+                )
+
                 lines.append(
                     f"\n*{stock['name']}* ({code})\n"
                     f"  매수가: {buy_price:,.0f}원\n"
                     f"  현재가: {cur:,.0f}원\n"
                     f"  {gap_emoji} 갭: {gap:+.2f}%\n"
-                    f"  추이: {trend}"
+                    f"  추이: {trend}\n"
+                    f"  💬 {opinion if opinion else '분석 불가'}"
                 )
             except Exception as e:
                 lines.append(f"\n*{stock['name']}* ({code}): 조회 실패")
