@@ -515,7 +515,6 @@ MAIN_KEYBOARD = ReplyKeyboardMarkup(
         [KeyboardButton("종료"),     KeyboardButton("도움말")],
     ],
     resize_keyboard=True,
-    persistent=True,
 )
 
 HELP_TEXT = (
