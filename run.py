@@ -666,7 +666,7 @@ async def _build_portfolio_lines(active: list) -> list[str]:
                 "핵심 사유를 2줄 이내로 설명하세요. "
                 "첫 줄: 판단(이모지 포함), 둘째 줄: 사유."
             )
-            opinion = _llm_call(
+            opinion = await llm(
                 "당신은 한국 주식 단타 전문가입니다. 간결·명확하게 답하세요.",
                 expert_prompt,
                 max_tokens=120,
@@ -678,7 +678,7 @@ async def _build_portfolio_lines(active: list) -> list[str]:
                 f"  현재가: {cur:,.0f}원\n"
                 f"  {gap_emoji} 갭: {gap:+.2f}%\n"
                 f"  추이: {trend}\n"
-                f"  💬 {opinion if opinion else '분석 불가'}"
+                f"  💬 {opinion or '분석 불가'}"
             )
             stock_lines_for_llm.append(
                 f"{stock['name']}: 매수가 {buy_price:,.0f}원, "
