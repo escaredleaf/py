@@ -666,11 +666,12 @@ async def _build_portfolio_lines(active: list) -> list[str]:
                 "핵심 사유를 2줄 이내로 설명하세요. "
                 "첫 줄: 판단(이모지 포함), 둘째 줄: 사유."
             )
-            opinion = await llm(
+            opinion = _llm_call(
                 "당신은 한국 주식 단타 전문가입니다. 간결·명확하게 답하세요.",
                 expert_prompt,
-                max_tokens=120,
+                120,
             )
+            print(f"[LLM opinion] {stock['name']}: {repr(opinion)}")
 
             lines.append(
                 f"\n*{stock['name']}* ({code})\n"
