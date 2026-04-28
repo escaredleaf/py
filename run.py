@@ -512,7 +512,8 @@ MAIN_KEYBOARD = ReplyKeyboardMarkup(
     [
         [KeyboardButton("추천"),     KeyboardButton("신규추천")],
         [KeyboardButton("매수"),     KeyboardButton("상태")],
-        [KeyboardButton("종료"),     KeyboardButton("도움말")],
+        [KeyboardButton("종목분석"), KeyboardButton("종료")],
+        [KeyboardButton("도움말")],
     ],
     resize_keyboard=True,
 )
@@ -527,8 +528,10 @@ HELP_TEXT = (
     "`상태` - 전체 추적 종목 현황\n"
     "`상태 종목코드` - 특정 종목 상세 현황\n"
     "`종료 종목코드` - 종목 추적 중단\n"
+    "`종목분석 종목명또는코드` - IB 스타일 심층 분석\n"
     "`도움말` - 이 메시지\n\n"
-    "예시: `매수 005930 71200`  (삼성전자)"
+    "예시: `매수 005930 71200`  (삼성전자)\n"
+    "예시: `종목분석 삼성전자`"
 )
 
 
@@ -659,6 +662,92 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+def resolve_stock(query: str) -> tuple[str, str]:
+    """종목명 또는 코드 → (name, code) 반환"""
+    query = query.strip()
+    if query.isdigit() and len(query) == 6:
+        return get_name_by_code(query), query
+    # 이름으로 검색
+    url = (
+        f"https://ac.finance.naver.com/ac"
+        f"?q={quote(query)}&q_enc=UTF-8&t_aid=stock&st=111"
+        f"&r_format=json&r_enc=UTF-8&r_unicode=0&t_koreng=1&r_lt=5"
+    )
+    try:
+        data  = requests.get(url, headers=HEADERS, timeout=8).json()
+        items = data.get("items", [[]])[0]
+        if items and len(items[0]) > 1:
+            return items[0][0], items[0][1]
+    except Exception:
+        pass
+    return query, ""
+
+
+async def cmd_stock_analysis(update: Update, query: str):
+    """IB 스타일 종목 심층 분석"""
+    await update.message.reply_text(f"🔬 *{query}* 분석 중... (30~60초 소요)", parse_mode="Markdown")
+
+    name, code = resolve_stock(query)
+
+    # 기초 데이터 수집
+    info   = get_stock_info(code) if code else None
+    daily  = get_daily_candles(code, count=60) if code else []
+
+    data_block = f"종목명: {name}"
+    if code:
+        data_block += f" (코드: {code})"
+    if info:
+        data_block += (
+            f"\n현재가: {info['price']:,}원"
+            f"\n시가: {info['open']:,}원  고가: {info['high']:,}원  저가: {info['low']:,}원"
+            f"\n누적거래량: {info['volume']:,}"
+        )
+    if len(daily) >= 20:
+        closes  = [c["close"] for c in daily]
+        ma5     = sum(closes[-5:]) / 5
+        ma20    = sum(closes[-20:]) / 20
+        chg1m   = (closes[-1] - closes[-20]) / closes[-20] * 100
+        chg3m   = (closes[-1] - closes[0])   / closes[0]   * 100
+        data_block += (
+            f"\nMA5: {ma5:,.0f}원  MA20: {ma20:,.0f}원"
+            f"\n1개월 변화율: {chg1m:+.1f}%  3개월 변화율: {chg3m:+.1f}%"
+            f"\n52주 고가: {max(c['high'] for c in daily):,}원"
+            f"  52주 저가: {min(c['low'] for c in daily):,}원"
+        )
+
+    system_prompt = (
+        "당신은 투자은행(IB) 애널리스트입니다. "
+        "제공된 데이터와 당신의 지식을 바탕으로 IB 스타일의 심층 분석을 수행합니다. "
+        "마크다운 없이 plain-text로 작성하고, 표(테이블) 형식은 사용하지 마세요. "
+        "한국어로 답변하세요."
+    )
+
+    user_prompt = f"""다음 종목을 IB 스타일로 분석해주세요.
+
+[제공 데이터]
+{data_block}
+
+[분석 순서 - 반드시 이 순서로]
+1. 내러티브 (시장이 현재 가격에 반영한 스토리)
+2. Reverse DCF (현재 주가가 암시하는 성장률/마진 역산)
+3. Forward DCF (합리적 가정 기반 적정가 추정)
+4. 트레이딩 컴프 (주요 밸류에이션 멀티플 해석)
+5. 리스크 요인 (Deal Radar: M&A, 규제, 경쟁 등)
+6. So What (매수/보유/매도 판단 및 근거)
+
+데이터가 부족한 항목은 [추정] 또는 [데이터 없음]으로 명시하세요."""
+
+    result = await llm(system_prompt, user_prompt, max_tokens=1200)
+
+    if not result:
+        await update.message.reply_text("분석 실패: LLM 응답 없음")
+        return
+
+    # 텔레그램 4096자 제한 분할 전송
+    for i in range(0, len(result), 4000):
+        await update.message.reply_text(result[i:i+4000])
+
+
 async def cmd_close(update: Update, context: ContextTypes.DEFAULT_TYPE):
     args = context.args
     if not args:
@@ -690,6 +779,9 @@ async def message_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if pending == "status_code":
         context.args = parts
         await cmd_status(update, context)
+        return
+    if pending == "stock_analysis":
+        await cmd_stock_analysis(update, text)
         return
 
     # ── 일반 라우팅 ──
@@ -735,6 +827,15 @@ async def message_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     f"추적 중단할 *종목코드*를 입력하세요:\n{stock_list}",
                     parse_mode="Markdown",
                 )
+    elif keyword == "종목분석":
+        if len(parts) >= 2:
+            await cmd_stock_analysis(update, " ".join(parts[1:]))
+        else:
+            _pending[cid] = "stock_analysis"
+            await update.message.reply_text(
+                "🔬 분석할 *종목명 또는 종목코드*를 입력하세요.\n예: `삼성전자` 또는 `005930`",
+                parse_mode="Markdown",
+            )
     elif keyword == "도움말":
         await cmd_help(update, context)
     else:
