@@ -574,49 +574,53 @@ async def track_job(context: ContextTypes.DEFAULT_TYPE):
             print(f"[track_job] {stock['name']} 오류: {e}")
 
 async def health_job(context: ContextTypes.DEFAULT_TYPE):
-    """5분마다 네이버 연동 상태 체크 - 이상 시에만 알림"""
+    """5분마다 네이버 연동 상태 체크 - 항상 결과 전송"""
     chat_id = get_setting("chat_id")
     if not chat_id:
         return
 
-    errors = []
+    results = {}
 
-    # 네이버 금융 거래대금 페이지 연결 확인
+    # 네이버 금융 거래대금 페이지
     try:
         res = requests.get(
             "https://finance.naver.com/sise/sise_quant.nhn?sosok=0",
             headers=HEADERS, timeout=8
         )
-        if res.status_code != 200:
-            errors.append(f"네이버 금융: HTTP {res.status_code}")
+        results["네이버 금융"] = "✅ 정상" if res.status_code == 200 else f"❌ HTTP {res.status_code}"
     except Exception as e:
-        errors.append(f"네이버 금융: 연결 실패 ({e})")
+        results["네이버 금융"] = f"❌ 연결 실패"
 
-    # 네이버 모바일 API 확인 (삼성전자 005930)
+    # 네이버 모바일 API
     try:
         res = requests.get(
             "https://m.stock.naver.com/api/stock/005930/basic",
             headers=HEADERS, timeout=8
         )
-        if res.status_code != 200:
-            errors.append(f"네이버 API: HTTP {res.status_code}")
+        results["네이버 API"] = "✅ 정상" if res.status_code == 200 else f"❌ HTTP {res.status_code}"
     except Exception as e:
-        errors.append(f"네이버 API: 연결 실패 ({e})")
+        results["네이버 API"] = f"❌ 연결 실패"
 
-    # DB 확인
+    # DB 및 추적 종목 수
     try:
-        get_active_stocks()
+        active = get_active_stocks()
+        results["DB"] = f"✅ 정상 (추적 {len(active)}종목)"
     except Exception as e:
-        errors.append(f"DB: 오류 ({e})")
+        results["DB"] = f"❌ 오류"
 
-    if errors:
-        await context.bot.send_message(
-            chat_id=int(chat_id),
-            text="🚨 *헬스체크 이상 감지*\n" + "\n".join(f"• {e}" for e in errors),
-            parse_mode="Markdown",
-        )
+    now = datetime.now().strftime("%H:%M:%S")
+    lines = [f"🔍 *헬스체크* `{now}`"]
+    for name, status in results.items():
+        lines.append(f"• {name}: {status}")
+
+    await context.bot.send_message(
+        chat_id=int(chat_id),
+        text="\n".join(lines),
+        parse_mode="Markdown",
+    )
 
 
+# ── 진입점 ────────────────────────────────────────────────────────────
 
 def main():
     init_db()
