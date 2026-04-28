@@ -517,10 +517,9 @@ _pending: dict[str, str] = {}
 
 MAIN_KEYBOARD = ReplyKeyboardMarkup(
     [
-        [KeyboardButton("추천"),     KeyboardButton("신규추천")],
-        [KeyboardButton("매수"),     KeyboardButton("상태")],
-        [KeyboardButton("종목분석"), KeyboardButton("종료")],
-        [KeyboardButton("도움말")],
+        [KeyboardButton("추천"),     KeyboardButton("매수")],
+        [KeyboardButton("상태"),     KeyboardButton("종목분석")],
+        [KeyboardButton("종료"),     KeyboardButton("도움말")],
     ],
     resize_keyboard=True,
 )
@@ -529,8 +528,7 @@ HELP_TEXT = (
     "📈 *QuantScalpBot* 명령어\n"
     "─────────────────────\n"
     "텍스트로 입력하세요 (/ 없이):\n\n"
-    "`추천` - 모멘텀 강한 종목 TOP 5\n"
-    "`신규추천` - 방금 움직이기 시작한 종목 TOP 5\n"
+    "`추천` - 모멘텀 강한 종목 + 신규 모멘텀 종목 TOP 5\n"
     "`매수 종목코드 매수가` - 매수 등록 및 모니터링\n"
     "`상태` - 전체 추적 종목 현황\n"
     "`상태 종목코드` - 특정 종목 상세 현황\n"
@@ -794,6 +792,7 @@ async def message_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # ── 일반 라우팅 ──
     if keyword == "추천":
         await cmd_recommend(update, context)
+        await cmd_new_recommend(update, context)
     elif keyword == "신규추천":
         await cmd_new_recommend(update, context)
     elif keyword == "매수":
