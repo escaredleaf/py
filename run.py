@@ -573,8 +573,50 @@ async def track_job(context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             print(f"[track_job] {stock['name']} 오류: {e}")
 
+async def health_job(context: ContextTypes.DEFAULT_TYPE):
+    """5분마다 네이버 연동 상태 체크 - 이상 시에만 알림"""
+    chat_id = get_setting("chat_id")
+    if not chat_id:
+        return
 
-# ── 진입점 ────────────────────────────────────────────────────────────
+    errors = []
+
+    # 네이버 금융 거래대금 페이지 연결 확인
+    try:
+        res = requests.get(
+            "https://finance.naver.com/sise/sise_quant.nhn?sosok=0",
+            headers=HEADERS, timeout=8
+        )
+        if res.status_code != 200:
+            errors.append(f"네이버 금융: HTTP {res.status_code}")
+    except Exception as e:
+        errors.append(f"네이버 금융: 연결 실패 ({e})")
+
+    # 네이버 모바일 API 확인 (삼성전자 005930)
+    try:
+        res = requests.get(
+            "https://m.stock.naver.com/api/stock/005930/basic",
+            headers=HEADERS, timeout=8
+        )
+        if res.status_code != 200:
+            errors.append(f"네이버 API: HTTP {res.status_code}")
+    except Exception as e:
+        errors.append(f"네이버 API: 연결 실패 ({e})")
+
+    # DB 확인
+    try:
+        get_active_stocks()
+    except Exception as e:
+        errors.append(f"DB: 오류 ({e})")
+
+    if errors:
+        await context.bot.send_message(
+            chat_id=int(chat_id),
+            text="🚨 *헬스체크 이상 감지*\n" + "\n".join(f"• {e}" for e in errors),
+            parse_mode="Markdown",
+        )
+
+
 
 def main():
     init_db()
@@ -586,7 +628,8 @@ def main():
     # 한글 명령어는 텍스트 메시지로 처리 (텔레그램은 영문 명령어만 허용)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_router))
 
-    app.job_queue.run_repeating(track_job, interval=15, first=15)
+    app.job_queue.run_repeating(track_job,  interval=15,  first=15)
+    app.job_queue.run_repeating(health_job, interval=300, first=60)
 
     print("🚀 QuantScalpBot 가동 중 (Ctrl+C 로 종료)")
     app.run_polling(allowed_updates=["message"])
