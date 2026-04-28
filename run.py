@@ -61,25 +61,29 @@ def _llm_call(system: str, user: str, max_tokens: int = 250) -> str:
             json={
                 "model": LLM_MODEL,
                 "messages": [
-                    {"role": "system", "content": system},
-                    {"role": "user",   "content": user},
+                    {"role": "user", "content": f"{system}\n\n{user}"},
                 ],
                 "max_completion_tokens": max_tokens,
             },
-            timeout=15,
+            timeout=30,
         )
         data = res.json()
-        print(f"[LLM raw] {data}")
         if "choices" not in data:
             err = data.get("error", {})
-            return f"⚠️ LLM 오류\n{err.get('message', str(data))}"
+            msg = err.get("message", str(data))
+            print(f"[LLM] 오류 응답: {msg}")
+            return f"⚠️ LLM 오류\n{msg}"
         choice = data["choices"][0]
         content = choice.get("message", {}).get("content") or ""
-        print(f"[LLM finish_reason] {choice.get('finish_reason')} | content: {repr(content[:100])}")
+        refusal = choice.get("message", {}).get("refusal") or ""
+        if not content and refusal:
+            print(f"[LLM] 거부 응답: {refusal}")
+            return f"⚠️ {refusal}"
+        if not content:
+            print(f"[LLM] 빈 응답. finish_reason={choice.get('finish_reason')} full={data}")
         return content.strip()
     except Exception as e:
-        msg = f"[LLM] 오류: {e}"
-        print(msg)
+        print(f"[LLM] 오류: {e}")
         return f"⚠️ LLM 오류\n{e}"
 
 
