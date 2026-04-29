@@ -175,18 +175,35 @@ def add_tracked_stock(name: str, code: str, buy_price: float):
 def get_active_stocks() -> list[dict]:
     with get_conn() as conn:
         rows = conn.execute(
-            "SELECT * FROM tracked_stocks WHERE status = 'active'"
+            "SELECT * FROM tracked_stocks WHERE status = 'active' ORDER BY id"
         ).fetchall()
         return [dict(r) for r in rows]
 
 
-def close_stock(code: str):
+def close_stock(code: str) -> int:
     with get_conn() as conn:
-        conn.execute(
+        cur = conn.execute(
             "UPDATE tracked_stocks SET status = 'closed' WHERE code = ? AND status = 'active'",
             (code,)
         )
         conn.commit()
+        return cur.rowcount
+
+
+def close_stock_by_id(stock_id: int) -> dict | None:
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT * FROM tracked_stocks WHERE id = ? AND status = 'active'",
+            (stock_id,),
+        ).fetchone()
+        if not row:
+            return None
+        conn.execute(
+            "UPDATE tracked_stocks SET status = 'closed' WHERE id = ? AND status = 'active'",
+            (stock_id,),
+        )
+        conn.commit()
+        return dict(row)
 
 
 def get_stock_record(code: str) -> dict | None:
@@ -1206,15 +1223,105 @@ async def cmd_stock_analysis(update: Update, query: str):
         await update.message.reply_text(result[i:i+4000])
 
 
+def resolve_delete_selection(query: str, active: list[dict]) -> dict | None:
+    """번호 또는 종목코드로 삭제할 활성 추적 항목을 선택"""
+    query = query.strip()
+    if not query:
+        return None
+
+    if query.isdigit():
+        idx = int(query)
+        if 1 <= idx <= len(active):
+            return active[idx - 1]
+
+    normalized = normalize_stock_code(query)
+    if normalized:
+        matches = [s for s in active if s.get("code") == normalized]
+        return matches[0] if len(matches) == 1 else None
+
+    return None
+
+
+def build_delete_keyboard(active: list[dict]) -> ReplyKeyboardMarkup:
+    rows = []
+    for i in range(0, len(active), 4):
+        rows.append([KeyboardButton(str(n)) for n in range(i + 1, min(i + 5, len(active) + 1))])
+    rows.append([KeyboardButton("취소")])
+    return ReplyKeyboardMarkup(rows, resize_keyboard=True, one_time_keyboard=True)
+
+
+async def start_stock_delete(update: Update):
+    active = get_active_stocks()
+    if not active:
+        await update.message.reply_text("추적 중인 종목이 없습니다.", reply_markup=MAIN_KEYBOARD)
+        return
+
+    cid = str(update.effective_chat.id)
+    _pending[cid] = {"action": "close"}
+    stock_list = "\n".join(
+        f"{i}. {s['name']} ({s['code']}) / 매수가 {s['buy_price']:,.0f}원"
+        for i, s in enumerate(active, 1)
+    )
+    await update.message.reply_text(
+        "추적 중단할 종목을 선택하세요.\n"
+        "아래 번호 버튼을 누르거나 종목코드를 입력할 수 있습니다.\n\n"
+        f"{stock_list}",
+        parse_mode="Markdown",
+        reply_markup=build_delete_keyboard(active),
+    )
+
+
+async def handle_pending_stock_delete(update: Update, text: str, pending: dict):
+    active = get_active_stocks()
+    stock = resolve_delete_selection(text, active)
+    if not stock:
+        _pending[str(update.effective_chat.id)] = pending
+        await update.message.reply_text(
+            "삭제할 종목을 찾을 수 없습니다. 목록의 번호 버튼을 누르거나 정확한 종목코드를 입력해주세요.",
+            reply_markup=build_delete_keyboard(active) if active else MAIN_KEYBOARD,
+        )
+        return
+
+    if close_stock_by_id(stock["id"]):
+        await update.message.reply_text(
+            f"🛑 {stock['name']} ({stock['code']}) 추적을 종료했습니다.",
+            reply_markup=MAIN_KEYBOARD,
+        )
+    else:
+        await update.message.reply_text(
+            "이미 삭제되었거나 찾을 수 없는 항목입니다.",
+            reply_markup=MAIN_KEYBOARD,
+        )
+
+
 async def cmd_close(update: Update, context: ContextTypes.DEFAULT_TYPE):
     args = context.args
     if not args:
-        await update.message.reply_text("사용법: 종목삭제 종목코드\n예: 종목삭제 005930")
+        await start_stock_delete(update)
         return
-    code = args[0].strip()
-    name = get_name_by_code(code)
-    close_stock(code)
-    await update.message.reply_text(f"🛑 {name} ({code}) 추적을 종료했습니다.")
+
+    query = " ".join(args).strip()
+    active = get_active_stocks()
+    stock = resolve_delete_selection(query, active)
+    if not stock:
+        await update.message.reply_text(
+            "삭제할 종목을 찾을 수 없습니다.\n"
+            "`종목삭제`를 눌러 목록의 번호 버튼을 선택하거나 종목코드를 입력해주세요.",
+            parse_mode="Markdown",
+            reply_markup=MAIN_KEYBOARD,
+        )
+        return
+
+    if close_stock_by_id(stock["id"]):
+        await update.message.reply_text(
+            f"🛑 {stock['name']} ({stock['code']}) 추적을 종료했습니다.",
+            reply_markup=MAIN_KEYBOARD,
+        )
+    else:
+        await update.message.reply_text(
+            "이미 삭제되었거나 찾을 수 없는 항목입니다.",
+            reply_markup=MAIN_KEYBOARD,
+        )
 
 
 async def message_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1245,8 +1352,7 @@ async def message_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await handle_pending_stock_registration(update, text, parts, pending)
             return
         if action == "close":
-            context.args = parts
-            await cmd_close(update, context)
+            await handle_pending_stock_delete(update, text, pending)
             return
         if action == "stock_analysis":
             await cmd_stock_analysis(update, text)
@@ -1284,16 +1390,7 @@ async def message_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.args = parts[1:]
             await cmd_close(update, context)
         else:
-            active = get_active_stocks()
-            if not active:
-                await update.message.reply_text("추적 중인 종목이 없습니다.")
-            else:
-                _pending[cid] = {"action": "close"}
-                stock_list = "\n".join(f"• {s['name']} ({s['code']})" for s in active)
-                await update.message.reply_text(
-                    f"추적 중단할 *종목코드*를 입력하세요:\n{stock_list}",
-                    parse_mode="Markdown",
-                )
+            await start_stock_delete(update)
     elif keyword == "종목분석":
         if len(parts) >= 2:
             await cmd_stock_analysis(update, " ".join(parts[1:]))
