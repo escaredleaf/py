@@ -1,26 +1,58 @@
-# Android Phone Call App
+# Android WebRTC AI Voice Call App
 
-전화번호를 입력하고 **전화 걸기** 버튼을 누르면 전화를 시도하는 간단한 안드로이드 앱입니다.
+안드로이드 앱에서 WebRTC를 통해 AI와 실시간 음성 통화를 수행하는 예제입니다.
 
 ## 프로젝트 위치
 
 `/workspace/android-call-app`
 
-## 주요 기능
+## 구성
 
-- 전화번호 입력
-- `CALL_PHONE` 권한 요청
-- 권한 승인 시 `Intent.ACTION_CALL`로 즉시 전화 실행
-- 권한 거부 시 안내 메시지 표시
+- Android 앱: `android-call-app/app`
+  - 마이크 권한 요청
+  - WebRTC Offer/Answer 교환
+  - AI 통화 시작/종료 UI
+- 세션 서버(FastAPI): `android-call-app/session-server`
+  - 서버에 저장된 OpenAI API 키로 에페메럴 토큰 발급
+  - 앱은 이 토큰으로 Realtime WebRTC 연결
 
-## 실행 방법
+## 빠른 실행
 
-1. Android Studio에서 `android-call-app` 폴더를 엽니다.
-2. Gradle Sync 완료 후 에뮬레이터 또는 실제 기기를 연결합니다.
-3. 앱 실행 후 전화번호를 입력하고 `전화 걸기` 버튼을 누릅니다.
-4. 최초 1회 권한 요청이 뜨면 허용합니다.
+### 1) 세션 서버 실행
 
-## 참고
+```bash
+cd /workspace/android-call-app/session-server
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+cp .env.example .env
+```
 
-- 에뮬레이터에서는 실제 통화가 불가능할 수 있습니다.
-- 실제 통화 테스트는 SIM이 있는 물리 기기에서 진행하세요.
+`.env`에 실제 키 입력:
+
+```env
+OPENAI_API_KEY=sk-...
+OPENAI_REALTIME_MODEL=gpt-4o-realtime-preview
+OPENAI_REALTIME_VOICE=alloy
+```
+
+서버 실행:
+
+```bash
+uvicorn main:app --host 0.0.0.0 --port 8000
+```
+
+### 2) Android 앱 실행
+
+1. Android Studio에서 `/workspace/android-call-app` 열기
+2. Gradle Sync 완료
+3. 앱 실행
+4. 세션 URL 입력
+   - 에뮬레이터: `http://10.0.2.2:8000/session`
+   - 실기기: `http://<서버IP>:8000/session`
+5. `AI 통화 시작` 버튼으로 연결
+
+## 주의
+
+- 이 예제는 MVP 수준으로, 프로덕션에서는 재시도/로깅/상태관리 개선이 필요합니다.
+- OpenAI API 키는 앱에 넣지 말고 반드시 서버에서만 사용하세요.

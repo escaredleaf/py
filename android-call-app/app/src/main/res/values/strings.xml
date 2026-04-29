@@ -1,11 +1,16 @@
 <resources>
-    <string name="app_name">PhoneCallApp</string>
-    <string name="title_phone_number">전화번호</string>
-    <string name="hint_phone_number">예: 01012345678</string>
-    <string name="action_call">전화 걸기</string>
-    <string name="phone_hint">@string/hint_phone_number</string>
-    <string name="call_button">@string/action_call</string>
-    <string name="error_empty_phone">전화번호를 입력하세요.</string>
-    <string name="error_permission_denied">전화 권한이 필요합니다.</string>
-    <string name="error_cannot_call">전화 앱을 실행할 수 없습니다.</string>
+    <string name="app_name">AI Voice Call App</string>
+    <string name="title_realtime_call">WebRTC AI 음성 통화</string>
+    <string name="backend_hint">예: http://10.0.2.2:8000/session</string>
+    <string name="backend_label">세션 서버 URL</string>
+    <string name="call_button">AI 통화 시작</string>
+    <string name="hangup_button">통화 종료</string>
+    <string name="state_idle">대기 중</string>
+    <string name="state_connecting">연결 중...</string>
+    <string name="state_connected">통화 중</string>
+    <string name="state_ending">종료 중...</string>
+    <string name="error_permission_audio">마이크 권한이 필요합니다.</string>
+    <string name="error_backend_url">세션 서버 URL을 입력하세요.</string>
+    <string name="error_network">서버 연결에 실패했습니다.</string>
+    <string name="error_webrtc">WebRTC 연결에 실패했습니다.</string>
 </resources>
