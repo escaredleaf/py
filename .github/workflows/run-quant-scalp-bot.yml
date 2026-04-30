@@ -19,7 +19,6 @@ jobs:
 
     env:
       TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
-      LLM_KEY: ${{ secrets.LLM_KEY }}
       PYTHONUNBUFFERED: "1"
 
     steps:
@@ -42,10 +41,6 @@ jobs:
         run: |
           if [ -z "$TELEGRAM_TOKEN" ]; then
             echo "TELEGRAM_TOKEN repository secret is required."
-            exit 1
-          fi
-          if [ -z "$LLM_KEY" ]; then
-            echo "LLM_KEY repository secret is required."
             exit 1
           fi
 

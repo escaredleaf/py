@@ -14,9 +14,6 @@ KST = timezone(timedelta(hours=9))
 
 def now_kst() -> datetime:
     return datetime.now(KST)
-from urllib.parse import quote
-
-import asyncio
 
 import requests
 import pandas as pd
@@ -31,13 +28,7 @@ TOKEN = os.environ.get(
     "8751027463:AAEt_Xg7nR0AAVJyXYkyUgkt6BXFbC_x28o",
 )
 
-LLM_URL   = "https://api.platform.a15t.com/v1/chat/completions"
-LLM_MODEL = "openai/gpt-5-mini-2025-08-07"
-LLM_KEY   = os.environ.get("LLM_KEY", "sk-gapk-6z3jLdHWOoztTgupT9OgLA3fU-QcKSY1")
-
 DB_PATH = "quant_scalp.db"
-LLM_TIMEOUT_SECONDS = 90
-LLM_MAX_ATTEMPTS = 2
 DEFAULT_MONITOR_INTERVAL_SECONDS = 15
 MIN_MONITOR_INTERVAL_SECONDS = 5
 MAX_MONITOR_INTERVAL_SECONDS = 24 * 60 * 60
@@ -59,58 +50,6 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(message)s",
     level=logging.WARNING,
 )
-
-# ── LLM ──────────────────────────────────────────────────────────────
-
-def _llm_call(system: str, user: str, max_tokens: int = 1000) -> str:
-    """동기 LLM 호출 (requests)"""
-    payload = {
-        "model": LLM_MODEL,
-        "messages": [
-            {"role": "user", "content": f"{system}\n\n{user}"},
-        ],
-        "max_completion_tokens": max_tokens,
-    }
-
-    last_error = None
-    for attempt in range(1, LLM_MAX_ATTEMPTS + 1):
-        try:
-            res = requests.post(
-                LLM_URL,
-                headers={"Authorization": f"Bearer {LLM_KEY}", "Content-Type": "application/json"},
-                json=payload,
-                timeout=(10, LLM_TIMEOUT_SECONDS),
-            )
-            data = res.json()
-            if "choices" not in data:
-                err = data.get("error", {})
-                msg = err.get("message", str(data))
-                print(f"[LLM] 오류 응답: {msg}")
-                return f"⚠️ LLM 오류\n{msg}"
-            choice = data["choices"][0]
-            content = choice.get("message", {}).get("content") or ""
-            refusal = choice.get("message", {}).get("refusal") or ""
-            if not content and refusal:
-                print(f"[LLM] 거부 응답: {refusal}")
-                return f"⚠️ {refusal}"
-            if not content:
-                print(f"[LLM] 빈 응답. finish_reason={choice.get('finish_reason')} full={data}")
-            return content.strip()
-        except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
-            last_error = e
-            print(f"[LLM] 네트워크 오류 {attempt}/{LLM_MAX_ATTEMPTS}: {e}")
-            continue
-        except Exception as e:
-            print(f"[LLM] 오류: {e}")
-            return f"⚠️ LLM 오류\n{e}"
-
-    return "⚠️ LLM 응답이 지연되고 있습니다. 잠시 후 다시 시도해주세요."
-
-
-async def llm(system: str, user: str, max_tokens: int = 1000) -> str:
-    """비동기 래퍼 - 이벤트 루프 블로킹 방지"""
-    loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(None, _llm_call, system, user, max_tokens)
 
 
 # ── DB ────────────────────────────────────────────────────────────────
@@ -585,8 +524,8 @@ _pending: dict[str, dict] = {}
 MAIN_KEYBOARD = ReplyKeyboardMarkup(
     [
         [KeyboardButton("AI추천"),   KeyboardButton("종목등록")],
-        [KeyboardButton("현재상황"), KeyboardButton("종목분석")],
-        [KeyboardButton("종목삭제"), KeyboardButton("설정")],
+        [KeyboardButton("현재상황"), KeyboardButton("종목삭제")],
+        [KeyboardButton("설정")],
         [KeyboardButton("메시지 알림받기"), KeyboardButton("메시지 알림중지")],
         [KeyboardButton("도움말")],
     ],
@@ -608,13 +547,11 @@ HELP_TEXT = (
     "`현재상황` - 전체 추적 종목 현황\n"
     "`현재상황 종목코드` - 특정 종목 상세 현황\n"
     "`종목삭제 종목코드` - 종목 추적 중단\n"
-    "`종목분석 종목명또는코드` - IB 스타일 심층 분석\n"
     "`설정` - 메시지 알림간격 변경\n"
     "`메시지 알림받기` - 자동 헬스체크/보유종목 메시지 시작\n"
     "`메시지 알림중지` - 자동 헬스체크/보유종목 메시지 중지\n"
     "`도움말` - 이 메시지\n\n"
     "예시: `종목등록 005930 71200`  (삼성전자)\n"
-    "예시: `종목분석 삼성전자`\n"
     "예시: `설정` → `30초` 또는 `5분`"
 )
 
@@ -629,7 +566,6 @@ BUTTON_KEYWORDS = {
     "상태",
     "종목삭제",
     "종료",
-    "종목분석",
     "도움말",
     "설정",
     "메시지 알림받기",
@@ -683,20 +619,6 @@ async def cmd_recommend(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"   점수 {s['score']}점 | {', '.join(s['reasons'])}"
             )
         await update.message.reply_text("\n\n".join(lines), parse_mode="Markdown")
-
-        # LLM 종합 분석
-        stock_summary = "\n".join(
-            f"- {s['name']}({s['market']}): 현재가 {s['price']:,}원, "
-            f"등락 {s['change_rate']:+.1f}%, 사유: {', '.join(s['reasons'])}"
-            for s in top5
-        )
-        commentary = await llm(
-            "당신은 한국 주식 단타 전문가입니다. 간결하고 핵심만 답하세요.",
-            f"다음 종목들이 단타 추천됐습니다. 시장 맥락과 주의사항을 2~3문장으로 분석해주세요:\n{stock_summary}",
-            max_tokens=800,
-        )
-        if commentary:
-            await update.message.reply_text(f"🤖 *AI 분석*\n{commentary}", parse_mode="Markdown")
     except Exception as e:
         await update.message.reply_text(f"오류: {e}")
 
@@ -1044,7 +966,6 @@ async def cmd_notification_off(update: Update, context: ContextTypes.DEFAULT_TYP
 async def _build_portfolio_lines(active: list) -> list[str]:
     """보유 종목별 상세 현황 라인 생성 (health_job / cmd_status 공용)"""
     lines = []
-    stock_lines_for_llm = []
 
     for stock in active:
         code      = stock.get("code", "")
@@ -1073,26 +994,9 @@ async def _build_portfolio_lines(active: list) -> list[str]:
                 f"  {gap_emoji} 갭: {gap:+.2f}%\n"
                 f"  추이: {trend}"
             )
-            stock_lines_for_llm.append(
-                f"{stock['name']}: 매수가 {buy_price:,.0f}원, "
-                f"현재가 {cur:,.0f}원, 수익률 {gap:+.2f}%, "
-                f"추이 {trend}, 5일 {chg5 or 'N/A'}, 10일 {chg10 or 'N/A'}"
-            )
         except Exception as e:
             print(f"[포트폴리오] {stock['name']} 예외: {type(e).__name__}: {e}")
             lines.append(f"\n*{stock['name']}* ({code}): 조회 실패")
-
-    if stock_lines_for_llm:
-        commentary = await llm(
-            "당신은 한국 주식 단타 전문가입니다. 간결하게 핵심만 답하세요.",
-            "보유 종목 현황입니다. 각 종목별로 추가매수/보유/매도 중 하나를 제시하고, "
-            "마지막에 전체 포트폴리오 대응 방향을 2문장으로 요약해주세요. "
-            "종목별 답변은 한 줄씩 작성하세요:\n"
-            + "\n".join(stock_lines_for_llm),
-            max_tokens=1200,
-        )
-        if commentary:
-            lines.append(f"\n🤖 *AI 종합 분석*\n{commentary}")
 
     return lines
 
@@ -1135,92 +1039,6 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"신호: {', '.join(sd['reasons']) or '없음'}",
         parse_mode="Markdown",
     )
-
-
-def resolve_stock(query: str) -> tuple[str, str]:
-    """종목명 또는 코드 → (name, code) 반환"""
-    query = query.strip()
-    if query.isdigit() and len(query) == 6:
-        return get_name_by_code(query), query
-    # 이름으로 검색
-    url = (
-        f"https://ac.finance.naver.com/ac"
-        f"?q={quote(query)}&q_enc=UTF-8&t_aid=stock&st=111"
-        f"&r_format=json&r_enc=UTF-8&r_unicode=0&t_koreng=1&r_lt=5"
-    )
-    try:
-        data  = requests.get(url, headers=HEADERS, timeout=8).json()
-        items = data.get("items", [[]])[0]
-        if items and len(items[0]) > 1:
-            return items[0][0], items[0][1]
-    except Exception:
-        pass
-    return query, ""
-
-
-async def cmd_stock_analysis(update: Update, query: str):
-    """IB 스타일 종목 심층 분석"""
-    await update.message.reply_text(f"🔬 *{query}* 분석 중... (30~60초 소요)", parse_mode="Markdown")
-
-    name, code = resolve_stock(query)
-
-    # 기초 데이터 수집
-    info   = get_stock_info(code) if code else None
-    daily  = get_daily_candles(code, count=60) if code else []
-
-    data_block = f"종목명: {name}"
-    if code:
-        data_block += f" (코드: {code})"
-    if info:
-        data_block += (
-            f"\n현재가: {info['price']:,}원"
-            f"\n시가: {info['open']:,}원  고가: {info['high']:,}원  저가: {info['low']:,}원"
-            f"\n누적거래량: {info['volume']:,}"
-        )
-    if len(daily) >= 20:
-        closes  = [c["close"] for c in daily]
-        ma5     = sum(closes[-5:]) / 5
-        ma20    = sum(closes[-20:]) / 20
-        chg1m   = (closes[-1] - closes[-20]) / closes[-20] * 100
-        chg3m   = (closes[-1] - closes[0])   / closes[0]   * 100
-        data_block += (
-            f"\nMA5: {ma5:,.0f}원  MA20: {ma20:,.0f}원"
-            f"\n1개월 변화율: {chg1m:+.1f}%  3개월 변화율: {chg3m:+.1f}%"
-            f"\n52주 고가: {max(c['high'] for c in daily):,}원"
-            f"  52주 저가: {min(c['low'] for c in daily):,}원"
-        )
-
-    system_prompt = (
-        "당신은 투자은행(IB) 애널리스트입니다. "
-        "제공된 데이터와 당신의 지식을 바탕으로 IB 스타일의 심층 분석을 수행합니다. "
-        "마크다운 없이 plain-text로 작성하고, 표(테이블) 형식은 사용하지 마세요. "
-        "한국어로 답변하세요."
-    )
-
-    user_prompt = f"""다음 종목을 IB 스타일로 분석해주세요.
-
-[제공 데이터]
-{data_block}
-
-[분석 순서 - 반드시 이 순서로]
-1. 내러티브 (시장이 현재 가격에 반영한 스토리)
-2. Reverse DCF (현재 주가가 암시하는 성장률/마진 역산)
-3. Forward DCF (합리적 가정 기반 적정가 추정)
-4. 트레이딩 컴프 (주요 밸류에이션 멀티플 해석)
-5. 리스크 요인 (Deal Radar: M&A, 규제, 경쟁 등)
-6. So What (매수/보유/매도 판단 및 근거)
-
-데이터가 부족한 항목은 [추정] 또는 [데이터 없음]으로 명시하세요."""
-
-    result = await llm(system_prompt, user_prompt, max_tokens=3000)
-
-    if not result:
-        await update.message.reply_text("분석 실패: LLM 응답 없음")
-        return
-
-    # 텔레그램 4096자 제한 분할 전송
-    for i in range(0, len(result), 4000):
-        await update.message.reply_text(result[i:i+4000])
 
 
 def resolve_delete_selection(query: str, active: list[dict]) -> dict | None:
@@ -1331,7 +1149,6 @@ async def message_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyword = parts[0] if parts else ""
     cid     = str(update.effective_chat.id)
     button_keyword = keyword in BUTTON_KEYWORDS
-    command_has_args = len(parts) > 1
 
     # ── 다단계 입력 대기 중인 경우 ──
     pending = _pending.pop(cid, None)
@@ -1353,9 +1170,6 @@ async def message_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         if action == "close":
             await handle_pending_stock_delete(update, text, pending)
-            return
-        if action == "stock_analysis":
-            await cmd_stock_analysis(update, text)
             return
         if action == "settings_monitor_interval":
             await handle_monitor_interval_input(update, context, text)
@@ -1391,15 +1205,6 @@ async def message_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await cmd_close(update, context)
         else:
             await start_stock_delete(update)
-    elif keyword == "종목분석":
-        if len(parts) >= 2:
-            await cmd_stock_analysis(update, " ".join(parts[1:]))
-        else:
-            _pending[cid] = {"action": "stock_analysis"}
-            await update.message.reply_text(
-                "🔬 분석할 *종목명 또는 종목코드*를 입력하세요.\n예: `삼성전자` 또는 `005930`",
-                parse_mode="Markdown",
-            )
     elif keyword == "도움말":
         await cmd_help(update, context)
     elif keyword == "설정":
@@ -1445,20 +1250,6 @@ async def cmd_new_recommend(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"   점수 {s['score']}점 | {', '.join(s['reasons'])}"
             )
         await update.message.reply_text("\n\n".join(lines), parse_mode="Markdown")
-
-        # LLM 신규 모멘텀 해설
-        stock_summary = "\n".join(
-            f"- {s['name']}: 현재가 {s['price']:,}원, 등락 {s['change_rate']:+.1f}%, "
-            f"신호: {', '.join(s['reasons'])}"
-            for s in top5
-        )
-        commentary = await llm(
-            "당신은 한국 주식 단타 전문가입니다. 간결하고 핵심만 답하세요.",
-            f"방금 모멘텀이 시작된 종목들입니다. 진입 시 유의사항을 2~3문장으로 설명해주세요:\n{stock_summary}",
-            max_tokens=800,
-        )
-        if commentary:
-            await update.message.reply_text(f"🤖 *AI 분석*\n{commentary}", parse_mode="Markdown")
     except Exception as e:
         await update.message.reply_text(f"오류: {e}")
 
@@ -1558,21 +1349,6 @@ async def track_job(context: ContextTypes.DEFAULT_TYPE):
             f"현재가: {signal['price']:,.0f}원  수익률: {signal['pnl']:+.2f}%\n"
             f"사유: {', '.join(signal['reasons'])}"
         )
-
-    signal_summary = "\n".join(
-        f"- {s['name']}({s['code']}): 점수 {s['score']}, 현재가 {s['price']:,.0f}원, "
-        f"수익률 {s['pnl']:+.2f}%, 사유: {', '.join(s['reasons'])}"
-        for s in sell_signals
-    )
-    commentary = await llm(
-        "당신은 한국 주식 단타 전문가입니다. 간결하고 실행 중심으로 답하세요.",
-        "다음 종목들에 매도 신호가 감지됐습니다. "
-        "각 종목별로 매도/보유/부분매도 중 하나와 핵심 이유를 한 줄씩 제시하세요:\n"
-        + signal_summary,
-        max_tokens=1200,
-    )
-    if commentary:
-        lines.append(f"\n🤖 *AI 일괄 판단*\n{commentary}")
 
     await context.bot.send_message(
         chat_id=int(chat_id),
