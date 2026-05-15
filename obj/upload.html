@@ -1,0 +1,441 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>3D 모델 파일 업로드</title>
+    <style>
+        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            background: #0f1117;
+            color: #e8eaed;
+            min-height: 100vh;
+            padding: 32px 20px 48px;
+        }
+
+        .container {
+            max-width: 860px;
+            margin: 0 auto;
+        }
+
+        header {
+            margin-bottom: 28px;
+        }
+
+        header h1 {
+            font-size: 22px;
+            font-weight: 600;
+            letter-spacing: -0.02em;
+        }
+
+        header p {
+            margin-top: 6px;
+            font-size: 13px;
+            color: #9aa0a6;
+        }
+
+        .nav {
+            margin-top: 12px;
+        }
+
+        .nav a {
+            color: #8ab4f8;
+            font-size: 13px;
+            text-decoration: none;
+        }
+
+        .nav a:hover { text-decoration: underline; }
+
+        .card {
+            background: rgba(20, 22, 30, 0.9);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            border-radius: 12px;
+            padding: 24px;
+            margin-bottom: 20px;
+        }
+
+        .card h2 {
+            font-size: 14px;
+            font-weight: 600;
+            margin-bottom: 16px;
+        }
+
+        .dropzone {
+            border: 2px dashed rgba(255, 255, 255, 0.15);
+            border-radius: 10px;
+            padding: 40px 20px;
+            text-align: center;
+            cursor: pointer;
+            transition: border-color 0.15s, background 0.15s;
+        }
+
+        .dropzone:hover,
+        .dropzone.dragover {
+            border-color: #4285f4;
+            background: rgba(66, 133, 244, 0.06);
+        }
+
+        .dropzone p {
+            font-size: 14px;
+            color: #c4c7c5;
+        }
+
+        .dropzone .hint {
+            margin-top: 8px;
+            font-size: 12px;
+            color: #6b7280;
+        }
+
+        #file-input { display: none; }
+
+        .selected-files {
+            margin-top: 14px;
+            font-size: 12px;
+            color: #9aa0a6;
+            min-height: 18px;
+        }
+
+        .btn {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            padding: 10px 20px;
+            border: none;
+            border-radius: 8px;
+            font-size: 13px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: opacity 0.15s;
+        }
+
+        .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+        .btn-primary {
+            background: #4285f4;
+            color: #fff;
+            margin-top: 16px;
+        }
+
+        .btn-primary:hover:not(:disabled) { background: #3367d6; }
+
+        .btn-danger {
+            background: transparent;
+            color: #f87171;
+            border: 1px solid rgba(248, 113, 113, 0.3);
+            padding: 4px 10px;
+            font-size: 11px;
+        }
+
+        .btn-danger:hover { background: rgba(248, 113, 113, 0.1); }
+
+        .alert {
+            padding: 12px 16px;
+            border-radius: 8px;
+            font-size: 13px;
+            margin-bottom: 16px;
+            display: none;
+        }
+
+        .alert.show { display: block; }
+        .alert-success { background: rgba(52, 168, 83, 0.15); color: #81c995; border: 1px solid rgba(52, 168, 83, 0.3); }
+        .alert-error { background: rgba(220, 38, 38, 0.15); color: #fca5a5; border: 1px solid rgba(220, 38, 38, 0.3); }
+
+        .file-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 13px;
+        }
+
+        .file-table th {
+            text-align: left;
+            padding: 10px 12px;
+            font-size: 11px;
+            font-weight: 600;
+            color: #9aa0a6;
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+        }
+
+        .file-table td {
+            padding: 12px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+            vertical-align: middle;
+        }
+
+        .file-table tr:last-child td { border-bottom: none; }
+
+        .file-name {
+            font-family: "SF Mono", Menlo, monospace;
+            font-size: 12px;
+            word-break: break-all;
+        }
+
+        .badge {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 10px;
+            font-weight: 600;
+            text-transform: uppercase;
+        }
+
+        .badge-glb  { background: rgba(66, 133, 244, 0.2); color: #8ab4f8; }
+        .badge-obj  { background: rgba(52, 168, 83, 0.2); color: #81c995; }
+        .badge-mtl  { background: rgba(251, 188, 4, 0.2); color: #fdd663; }
+        .badge-jpg,
+        .badge-jpeg,
+        .badge-png,
+        .badge-webp { background: rgba(168, 85, 247, 0.2); color: #c4b5fd; }
+
+        .empty-state {
+            text-align: center;
+            padding: 32px;
+            color: #6b7280;
+            font-size: 13px;
+        }
+
+        .table-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 16px;
+        }
+
+        .file-count {
+            font-size: 12px;
+            color: #9aa0a6;
+        }
+
+        #upload-progress {
+            margin-top: 12px;
+            height: 4px;
+            background: rgba(255, 255, 255, 0.08);
+            border-radius: 2px;
+            overflow: hidden;
+            display: none;
+        }
+
+        #upload-progress .bar {
+            height: 100%;
+            background: #4285f4;
+            width: 0%;
+            transition: width 0.2s;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>3D 모델 파일 업로드</h1>
+            <p>GLB, OBJ, MTL 및 텍스처 파일을 <code>obj/assets</code> 폴더에 업로드합니다.</p>
+            <div class="nav">
+                <a href="index.php">← 3D 뷰어로 이동</a>
+            </div>
+        </header>
+
+        <div id="alert" class="alert"></div>
+
+        <div class="card">
+            <h2>파일 업로드</h2>
+            <form id="upload-form">
+                <div class="dropzone" id="dropzone">
+                    <p>클릭하거나 파일을 여기에 드래그하세요</p>
+                    <p class="hint">허용: .glb · .obj · .mtl · .jpg · .jpeg · .png · .webp</p>
+                </div>
+                <input type="file" id="file-input" name="files[]" multiple
+                       accept=".glb,.obj,.mtl,.jpg,.jpeg,.png,.webp">
+                <div class="selected-files" id="selected-files"></div>
+                <div id="upload-progress"><div class="bar"></div></div>
+                <button type="submit" class="btn btn-primary" id="submit-btn" disabled>업로드</button>
+            </form>
+        </div>
+
+        <div class="card">
+            <div class="table-header">
+                <h2>업로드 현황</h2>
+                <span class="file-count" id="file-count"></span>
+            </div>
+            <div id="file-list">
+                <div class="empty-state">불러오는 중…</div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+    const ALLOWED = ['glb', 'obj', 'mtl', 'jpg', 'jpeg', 'png', 'webp'];
+    const dropzone = document.getElementById('dropzone');
+    const fileInput = document.getElementById('file-input');
+    const selectedEl = document.getElementById('selected-files');
+    const submitBtn = document.getElementById('submit-btn');
+    const fileListEl = document.getElementById('file-list');
+    const fileCountEl = document.getElementById('file-count');
+    const alertEl = document.getElementById('alert');
+    const progressEl = document.getElementById('upload-progress');
+    const progressBar = progressEl.querySelector('.bar');
+    const form = document.getElementById('upload-form');
+
+    let pendingFiles = [];
+
+    function showAlert(msg, type = 'success') {
+        alertEl.textContent = msg;
+        alertEl.className = `alert alert-${type} show`;
+        setTimeout(() => alertEl.classList.remove('show'), 5000);
+    }
+
+    function extBadge(ext) {
+        const cls = `badge badge-${ext}`;
+        return `<span class="${cls}">${ext}</span>`;
+    }
+
+    function renderFileList(files) {
+        fileCountEl.textContent = files.length ? `총 ${files.length}개` : '';
+
+        if (!files.length) {
+            fileListEl.innerHTML = '<div class="empty-state">업로드된 파일이 없습니다.</div>';
+            return;
+        }
+
+        const rows = files.map(f => `
+            <tr>
+                <td class="file-name">${escapeHtml(f.name)}</td>
+                <td>${extBadge(f.ext)}</td>
+                <td>${f.size_fmt}</td>
+                <td>${f.modified}</td>
+                <td><button class="btn btn-danger" data-delete="${escapeHtml(f.name)}">삭제</button></td>
+            </tr>
+        `).join('');
+
+        fileListEl.innerHTML = `
+            <table class="file-table">
+                <thead>
+                    <tr>
+                        <th>파일명</th>
+                        <th>형식</th>
+                        <th>크기</th>
+                        <th>수정일</th>
+                        <th></th>
+                    </tr>
+                </thead>
+                <tbody>${rows}</tbody>
+            </table>
+        `;
+
+        fileListEl.querySelectorAll('[data-delete]').forEach(btn => {
+            btn.addEventListener('click', () => deleteFile(btn.dataset.delete));
+        });
+    }
+
+    function escapeHtml(str) {
+        const d = document.createElement('div');
+        d.textContent = str;
+        return d.innerHTML;
+    }
+
+    async function loadFiles() {
+        try {
+            const res = await fetch('upload.php?action=list');
+            const data = await res.json();
+            if (data.ok) renderFileList(data.files);
+        } catch {
+            fileListEl.innerHTML = '<div class="empty-state">목록을 불러올 수 없습니다.</div>';
+        }
+    }
+
+    function setPendingFiles(files) {
+        pendingFiles = [...files].filter(f => {
+            const ext = f.name.split('.').pop().toLowerCase();
+            return ALLOWED.includes(ext);
+        });
+
+        if (pendingFiles.length) {
+            selectedEl.textContent = pendingFiles.map(f => f.name).join(', ');
+            submitBtn.disabled = false;
+        } else {
+            selectedEl.textContent = files.length ? '허용되지 않는 파일 형식입니다.' : '';
+            submitBtn.disabled = true;
+        }
+    }
+
+    dropzone.addEventListener('click', () => fileInput.click());
+
+    dropzone.addEventListener('dragover', e => {
+        e.preventDefault();
+        dropzone.classList.add('dragover');
+    });
+
+    dropzone.addEventListener('dragleave', () => dropzone.classList.remove('dragover'));
+
+    dropzone.addEventListener('drop', e => {
+        e.preventDefault();
+        dropzone.classList.remove('dragover');
+        setPendingFiles(e.dataTransfer.files);
+    });
+
+    fileInput.addEventListener('change', () => setPendingFiles(fileInput.files));
+
+    form.addEventListener('submit', async e => {
+        e.preventDefault();
+        if (!pendingFiles.length) return;
+
+        const fd = new FormData();
+        pendingFiles.forEach(f => fd.append('files[]', f));
+
+        submitBtn.disabled = true;
+        progressEl.style.display = 'block';
+        progressBar.style.width = '30%';
+
+        try {
+            const res = await fetch('upload.php?action=upload', { method: 'POST', body: fd });
+            const data = await res.json();
+            progressBar.style.width = '100%';
+
+            if (data.ok) {
+                const names = data.uploaded.join(', ');
+                showAlert(`${data.uploaded.length}개 파일 업로드 완료: ${names}`);
+                if (data.errors?.length) showAlert(data.errors.join('\n'), 'error');
+                renderFileList(data.files);
+                pendingFiles = [];
+                selectedEl.textContent = '';
+                fileInput.value = '';
+            } else {
+                showAlert(data.errors?.join('\n') || data.error || '업로드 실패', 'error');
+            }
+        } catch {
+            showAlert('업로드 중 오류가 발생했습니다.', 'error');
+        } finally {
+            submitBtn.disabled = pendingFiles.length === 0;
+            setTimeout(() => {
+                progressEl.style.display = 'none';
+                progressBar.style.width = '0%';
+            }, 600);
+        }
+    });
+
+    async function deleteFile(name) {
+        if (!confirm(`"${name}" 파일을 삭제하시겠습니까?`)) return;
+
+        try {
+            const res = await fetch('upload.php?action=delete', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ name }),
+            });
+            const data = await res.json();
+            if (data.ok) {
+                showAlert(`"${name}" 삭제 완료`);
+                renderFileList(data.files);
+            } else {
+                showAlert(data.error || '삭제 실패', 'error');
+            }
+        } catch {
+            showAlert('삭제 중 오류가 발생했습니다.', 'error');
+        }
+    }
+
+    loadFiles();
+    </script>
+</body>
+</html>

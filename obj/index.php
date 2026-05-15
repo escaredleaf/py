@@ -203,6 +203,9 @@ if (!isset($models[$default])) {
         <p class="hint">
             마우스 드래그: 회전 · 스크롤: 확대/축소 · 우클릭 드래그: 이동
         </p>
+        <p class="hint" style="margin-top:6px">
+            <a href="upload.html" style="color:#8ab4f8;text-decoration:none">파일 업로드 →</a>
+        </p>
     </div>
 
     <div id="canvas-container"></div>
