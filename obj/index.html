@@ -1,22 +1,3 @@
-<?php
-$models = [
-    'glb' => [
-        'label' => 'GLB (bon260515)',
-        'path'  => 'assets/bon260515.glb',
-        'type'  => 'glb',
-    ],
-    'obj' => [
-        'label' => 'OBJ (bon002789)',
-        'path'  => 'assets/bon002789-000-30000.obj',
-        'mtl'   => 'assets/bon002789-000-30000.mtl',
-        'type'  => 'obj',
-    ],
-];
-$default = $_GET['model'] ?? 'glb';
-if (!isset($models[$default])) {
-    $default = 'glb';
-}
-?>
 <!DOCTYPE html>
 <html lang="ko">
 <head>
@@ -70,12 +51,14 @@ if (!isset($models[$default])) {
 
         .model-tabs {
             display: flex;
+            flex-wrap: wrap;
             gap: 6px;
             margin-bottom: 14px;
         }
 
         .model-tabs a {
             flex: 1;
+            min-width: 100px;
             text-align: center;
             padding: 8px 10px;
             border-radius: 8px;
@@ -119,6 +102,30 @@ if (!isset($models[$default])) {
             color: #6b7280;
             line-height: 1.5;
         }
+
+        .hint a { color: #8ab4f8; text-decoration: none; }
+        .hint a:hover { text-decoration: underline; }
+
+        .local-row {
+            margin-top: 10px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+
+        .local-row label {
+            font-size: 11px;
+            color: #9aa0a6;
+            cursor: pointer;
+            padding: 6px 10px;
+            border-radius: 6px;
+            background: rgba(255, 255, 255, 0.06);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .local-row label:hover { background: rgba(255, 255, 255, 0.1); }
+        .local-row input[type="file"] { display: none; }
 
         #loader {
             position: fixed;
@@ -173,39 +180,38 @@ if (!isset($models[$default])) {
 <body>
     <div id="loader">
         <div class="spinner"></div>
-        <p id="loader-text">모델 로딩 중…</p>
+        <p id="loader-text">설정 불러오는 중…</p>
     </div>
 
     <div id="error"></div>
 
     <div class="panel">
         <h1>경복궁 건숙문 3D 테스트</h1>
-        <p class="sub">PHP + Three.js 렌더링</p>
+        <p class="sub">GitHub Pages · Three.js (정적)</p>
 
-        <div class="model-tabs">
-            <?php foreach ($models as $key => $model): ?>
-            <a href="?model=<?= $key ?>"
-               class="<?= $key === $default ? 'active' : '' ?>">
-                <?= htmlspecialchars($model['label']) ?>
-            </a>
-            <?php endforeach; ?>
-        </div>
+        <div class="model-tabs" id="model-tabs"></div>
 
         <div class="info-row">
             <span>현재 모델</span>
-            <span><?= htmlspecialchars($models[$default]['type']) ?></span>
+            <span id="info-type">—</span>
         </div>
         <div class="info-row">
             <span>파일</span>
-            <span><?= htmlspecialchars(basename($models[$default]['path'])) ?></span>
+            <span id="info-file">—</span>
         </div>
 
         <p class="hint">
             마우스 드래그: 회전 · 스크롤: 확대/축소 · 우클릭 드래그: 이동
         </p>
-        <p class="hint" style="margin-top:6px">
-            <a href="upload.html" style="color:#8ab4f8;text-decoration:none">파일 업로드 →</a>
+        <p class="hint">
+            <a href="upload.html">assets 목록 · 배포 안내 →</a>
         </p>
+        <div class="local-row">
+            <label>
+                로컬 GLB 불러오기
+                <input type="file" id="local-glb" accept=".glb,model/gltf-binary">
+            </label>
+        </div>
     </div>
 
     <div id="canvas-container"></div>
@@ -226,18 +232,83 @@ if (!isset($models[$default])) {
     import { OBJLoader } from 'three/addons/loaders/OBJLoader.js';
     import { MTLLoader } from 'three/addons/loaders/MTLLoader.js';
 
-    const config = <?= json_encode([
-        'type' => $models[$default]['type'],
-        'path' => $models[$default]['path'],
-        'mtl'  => $models[$default]['mtl'] ?? null,
-    ], JSON_UNESCAPED_UNICODE) ?>;
+    const base = new URL('./', window.location.href).href;
+
+    function resolveUrl(path) {
+        return new URL(path, base).href;
+    }
+
+    const params = new URLSearchParams(location.search);
+    const requestedId = params.get('model');
 
     const container = document.getElementById('canvas-container');
     const loaderEl = document.getElementById('loader');
     const loaderText = document.getElementById('loader-text');
     const errorEl = document.getElementById('error');
+    const tabsEl = document.getElementById('model-tabs');
+    const infoType = document.getElementById('info-type');
+    const infoFile = document.getElementById('info-file');
 
     let scene, camera, renderer, controls, currentModel;
+    let objectUrlToRevoke = null;
+    let catalog = { models: [] };
+    let activeModel = null;
+
+    async function loadCatalog() {
+        const res = await fetch(resolveUrl('catalog.json'));
+        if (!res.ok) throw new Error('catalog.json 을 찾을 수 없습니다.');
+        catalog = await res.json();
+        if (!catalog.models?.length) throw new Error('catalog.json 에 models 가 없습니다.');
+    }
+
+    function pickDefaultModel() {
+        if (requestedId && catalog.models.some(m => m.id === requestedId)) {
+            return catalog.models.find(m => m.id === requestedId);
+        }
+        return catalog.models[0];
+    }
+
+    function renderTabs() {
+        const currentId = activeModel.id;
+        tabsEl.innerHTML = catalog.models.map(m => {
+            const q = new URLSearchParams({ model: m.id }).toString();
+            const cls = m.id === currentId ? 'active' : '';
+            return `<a href="?${q}" class="${cls}">${escapeHtml(m.label)}</a>`;
+        }).join('');
+    }
+
+    function escapeHtml(s) {
+        const d = document.createElement('div');
+        d.textContent = s;
+        return d.innerHTML;
+    }
+
+    function updatePanel() {
+        infoType.textContent = activeModel.type;
+        infoFile.textContent = activeModel.path.split('/').pop();
+        renderTabs();
+    }
+
+    function clearSceneModel() {
+        if (currentModel) {
+            scene.remove(currentModel);
+            currentModel.traverse((child) => {
+                if (child.geometry) child.geometry.dispose();
+                if (child.material) {
+                    const mats = Array.isArray(child.material) ? child.material : [child.material];
+                    mats.forEach((mat) => {
+                        if (mat.map) mat.map.dispose();
+                        mat.dispose();
+                    });
+                }
+            });
+            currentModel = null;
+        }
+        if (objectUrlToRevoke) {
+            URL.revokeObjectURL(objectUrlToRevoke);
+            objectUrlToRevoke = null;
+        }
+    }
 
     function init() {
         scene = new THREE.Scene();
@@ -319,32 +390,37 @@ if (!isset($models[$default])) {
         }
     }
 
-    async function loadModel() {
+    async function loadModelFromConfig(config) {
+        clearSceneModel();
+        loaderEl.classList.remove('hidden');
+        loaderText.textContent = '모델 로딩 중…';
+
         try {
             if (config.type === 'glb') {
                 loaderText.textContent = 'GLB 모델 로딩 중…';
+                const url = resolveUrl(config.path);
                 const gltf = await new Promise((resolve, reject) => {
-                    new GLTFLoader().load(config.path, resolve, onProgress, reject);
+                    new GLTFLoader().load(url, resolve, onProgress, reject);
                 });
                 currentModel = gltf.scene;
             } else {
                 loaderText.textContent = 'MTL/OBJ 모델 로딩 중…';
+                const mtlUrl = resolveUrl(config.mtl);
+                const mtlDir = mtlUrl.slice(0, mtlUrl.lastIndexOf('/') + 1);
+                const mtlFile = mtlUrl.slice(mtlUrl.lastIndexOf('/') + 1);
+
                 const materials = await new Promise((resolve, reject) => {
                     new MTLLoader()
-                        .setPath('assets/')
-                        .load(
-                            config.mtl.replace('assets/', ''),
-                            resolve,
-                            onProgress,
-                            reject
-                        );
+                        .setPath(mtlDir)
+                        .load(mtlFile, resolve, onProgress, reject);
                 });
                 materials.preload();
 
+                const objUrl = resolveUrl(config.path);
                 currentModel = await new Promise((resolve, reject) => {
                     new OBJLoader()
                         .setMaterials(materials)
-                        .load(config.path, resolve, onProgress, reject);
+                        .load(objUrl, resolve, onProgress, reject);
                 });
             }
 
@@ -358,9 +434,42 @@ if (!isset($models[$default])) {
             scene.add(currentModel);
             fitCameraToObject(currentModel);
             loaderEl.classList.add('hidden');
+            errorEl.style.display = 'none';
         } catch (err) {
             console.error(err);
             showError('모델 로드 실패: ' + err.message);
+        }
+    }
+
+    async function loadLocalGlb(file) {
+        if (!file || !file.name.toLowerCase().endsWith('.glb')) return;
+        clearSceneModel();
+        loaderEl.classList.remove('hidden');
+        loaderText.textContent = '로컬 GLB 로딩 중…';
+
+        objectUrlToRevoke = URL.createObjectURL(file);
+        infoType.textContent = 'glb (로컬)';
+        infoFile.textContent = file.name;
+        tabsEl.querySelectorAll('a').forEach(a => a.classList.remove('active'));
+
+        try {
+            const gltf = await new Promise((resolve, reject) => {
+                new GLTFLoader().load(objectUrlToRevoke, resolve, onProgress, reject);
+            });
+            currentModel = gltf.scene;
+            currentModel.traverse((child) => {
+                if (child.isMesh) {
+                    child.castShadow = true;
+                    child.receiveShadow = true;
+                }
+            });
+            scene.add(currentModel);
+            fitCameraToObject(currentModel);
+            loaderEl.classList.add('hidden');
+            errorEl.style.display = 'none';
+        } catch (err) {
+            console.error(err);
+            showError('로컬 GLB 로드 실패: ' + err.message);
         }
     }
 
@@ -376,8 +485,23 @@ if (!isset($models[$default])) {
         renderer.render(scene, camera);
     }
 
-    init();
-    loadModel();
+    document.getElementById('local-glb').addEventListener('change', (e) => {
+        const file = e.target.files?.[0];
+        if (file) loadLocalGlb(file);
+        e.target.value = '';
+    });
+
+    try {
+        await loadCatalog();
+        activeModel = pickDefaultModel();
+        init();
+        updatePanel();
+        await loadModelFromConfig(activeModel);
+    } catch (e) {
+        console.error(e);
+        loaderText.textContent = e.message || String(e);
+        showError(e.message || String(e));
+    }
     </script>
 </body>
 </html>

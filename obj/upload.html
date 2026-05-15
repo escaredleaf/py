@@ -1,9 +1,10 @@
 <!DOCTYPE html>
-<html lang="ko"> 
+<html lang="ko">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>3D 모델 파일 업로드</title>
+    <title>assets 폴더 · 배포 안내</title>
+    <script src="site-config.js"></script>
     <style>
         *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -15,14 +16,9 @@
             padding: 32px 20px 48px;
         }
 
-        .container {
-            max-width: 860px;
-            margin: 0 auto;
-        }
+        .container { max-width: 860px; margin: 0 auto; }
 
-        header {
-            margin-bottom: 28px;
-        }
+        header { margin-bottom: 28px; }
 
         header h1 {
             font-size: 22px;
@@ -31,14 +27,20 @@
         }
 
         header p {
-            margin-top: 6px;
+            margin-top: 8px;
             font-size: 13px;
             color: #9aa0a6;
+            line-height: 1.55;
         }
 
-        .nav {
-            margin-top: 12px;
+        header code {
+            font-size: 12px;
+            background: rgba(255, 255, 255, 0.08);
+            padding: 2px 6px;
+            border-radius: 4px;
         }
+
+        .nav { margin-top: 14px; }
 
         .nav a {
             color: #8ab4f8;
@@ -59,88 +61,28 @@
         .card h2 {
             font-size: 14px;
             font-weight: 600;
-            margin-bottom: 16px;
+            margin-bottom: 12px;
         }
 
-        .dropzone {
-            border: 2px dashed rgba(255, 255, 255, 0.15);
-            border-radius: 10px;
-            padding: 40px 20px;
-            text-align: center;
-            cursor: pointer;
-            transition: border-color 0.15s, background 0.15s;
-        }
-
-        .dropzone:hover,
-        .dropzone.dragover {
-            border-color: #4285f4;
-            background: rgba(66, 133, 244, 0.06);
-        }
-
-        .dropzone p {
-            font-size: 14px;
+        .notice {
+            font-size: 13px;
             color: #c4c7c5;
+            line-height: 1.6;
+            padding: 14px 16px;
+            background: rgba(251, 188, 4, 0.08);
+            border: 1px solid rgba(251, 188, 4, 0.25);
+            border-radius: 10px;
+            margin-bottom: 18px;
         }
 
-        .dropzone .hint {
-            margin-top: 8px;
-            font-size: 12px;
-            color: #6b7280;
-        }
-
-        #file-input { display: none; }
-
-        .selected-files {
-            margin-top: 14px;
-            font-size: 12px;
+        .steps {
+            font-size: 13px;
             color: #9aa0a6;
-            min-height: 18px;
+            line-height: 1.7;
+            padding-left: 1.2em;
         }
 
-        .btn {
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
-            padding: 10px 20px;
-            border: none;
-            border-radius: 8px;
-            font-size: 13px;
-            font-weight: 500;
-            cursor: pointer;
-            transition: opacity 0.15s;
-        }
-
-        .btn:disabled { opacity: 0.4; cursor: not-allowed; }
-
-        .btn-primary {
-            background: #4285f4;
-            color: #fff;
-            margin-top: 16px;
-        }
-
-        .btn-primary:hover:not(:disabled) { background: #3367d6; }
-
-        .btn-danger {
-            background: transparent;
-            color: #f87171;
-            border: 1px solid rgba(248, 113, 113, 0.3);
-            padding: 4px 10px;
-            font-size: 11px;
-        }
-
-        .btn-danger:hover { background: rgba(248, 113, 113, 0.1); }
-
-        .alert {
-            padding: 12px 16px;
-            border-radius: 8px;
-            font-size: 13px;
-            margin-bottom: 16px;
-            display: none;
-        }
-
-        .alert.show { display: block; }
-        .alert-success { background: rgba(52, 168, 83, 0.15); color: #81c995; border: 1px solid rgba(52, 168, 83, 0.3); }
-        .alert-error { background: rgba(220, 38, 38, 0.15); color: #fca5a5; border: 1px solid rgba(220, 38, 38, 0.3); }
+        .steps li { margin-bottom: 6px; }
 
         .file-table {
             width: 100%;
@@ -190,9 +132,11 @@
         .badge-png,
         .badge-webp { background: rgba(168, 85, 247, 0.2); color: #c4b5fd; }
 
+        .badge-unknown { background: rgba(255, 255, 255, 0.1); color: #9aa0a6; }
+
         .empty-state {
             text-align: center;
-            padding: 32px;
+            padding: 28px;
             color: #6b7280;
             font-size: 13px;
         }
@@ -202,61 +146,66 @@
             justify-content: space-between;
             align-items: center;
             margin-bottom: 16px;
+            flex-wrap: wrap;
+            gap: 8px;
         }
 
-        .file-count {
-            font-size: 12px;
+        .source-tag {
+            font-size: 11px;
             color: #9aa0a6;
         }
 
-        #upload-progress {
-            margin-top: 12px;
-            height: 4px;
-            background: rgba(255, 255, 255, 0.08);
-            border-radius: 2px;
-            overflow: hidden;
-            display: none;
+        .btn {
+            display: inline-flex;
+            align-items: center;
+            padding: 6px 12px;
+            border-radius: 6px;
+            font-size: 12px;
+            font-weight: 500;
+            text-decoration: none;
+            background: rgba(66, 133, 244, 0.2);
+            color: #8ab4f8;
+            border: 1px solid rgba(66, 133, 244, 0.35);
         }
 
-        #upload-progress .bar {
-            height: 100%;
-            background: #4285f4;
-            width: 0%;
-            transition: width 0.2s;
-        }
+        .btn:hover { background: rgba(66, 133, 244, 0.3); }
+
+        .meta { font-size: 12px; color: #6b7280; margin-top: 10px; }
     </style>
 </head>
 <body>
     <div class="container">
         <header>
-            <h1>3D 모델 파일 업로드</h1>
-            <p>GLB, OBJ, MTL 및 텍스처 파일을 <code>obj/assets</code> 폴더에 업로드합니다.</p>
+            <h1>obj/assets 파일 현황</h1>
+            <p>
+                GitHub Pages는 정적 호스팅만 제공하므로, 브라우저에서 서버로 파일을 “업로드”할 수는 없습니다.
+                파일은 <code>git</code>으로 <code>obj/assets/</code>에 추가한 뒤 푸시하고,
+                아래 <code>catalog.json</code>의 <code>allFiles</code>와 <code>models</code>를 함께 갱신하세요.
+            </p>
             <div class="nav">
-                <a href="index.php">← 3D 뷰어로 이동</a>
+                <a href="index.html">← 3D 뷰어</a>
             </div>
         </header>
 
-        <div id="alert" class="alert"></div>
-
         <div class="card">
-            <h2>파일 업로드</h2>
-            <form id="upload-form">
-                <div class="dropzone" id="dropzone">
-                    <p>클릭하거나 파일을 여기에 드래그하세요</p>
-                    <p class="hint">허용: .glb · .obj · .mtl · .jpg · .jpeg · .png · .webp</p>
-                </div>
-                <input type="file" id="file-input" name="files[]" multiple
-                       accept=".glb,.obj,.mtl,.jpg,.jpeg,.png,.webp">
-                <div class="selected-files" id="selected-files"></div>
-                <div id="upload-progress"><div class="bar"></div></div>
-                <button type="submit" class="btn btn-primary" id="submit-btn" disabled>업로드</button>
-            </form>
+            <div class="notice">
+                <strong>요약:</strong> 저장소에 커밋된 파일 목록은 <code>catalog.json</code> 또는 (선택) GitHub API로 표시합니다.
+                <code>site-config.js</code>에서 GitHub 조회를 켜면 public 저장소의 해당 경로 파일을 자동으로 나열할 수 있습니다.
+            </div>
+            <h2>새 모델을 사이트에 반영하는 절차</h2>
+            <ol class="steps">
+                <li>모델·텍스처 파일을 <code>obj/assets/</code>에 복사합니다.</li>
+                <li><code>obj/catalog.json</code>의 <code>allFiles</code>에 파일명을 추가합니다.</li>
+                <li>뷰어 탭에 넣으려면 <code>models</code> 배열에 <code>id</code>, <code>label</code>, <code>type</code>, <code>path</code> (및 OBJ일 때 <code>mtl</code>)을 추가합니다.</li>
+                <li>커밋 후 푸시하면 GitHub Pages에 반영됩니다.</li>
+            </ol>
+            <p class="meta">로컬에서만 GLB를 바로 보고 싶다면 뷰어의「로컬 GLB 불러오기」를 사용하세요.</p>
         </div>
 
         <div class="card">
             <div class="table-header">
-                <h2>업로드 현황</h2>
-                <span class="file-count" id="file-count"></span>
+                <h2>저장소에 포함된 assets</h2>
+                <span class="source-tag" id="list-source">불러오는 중…</span>
             </div>
             <div id="file-list">
                 <div class="empty-state">불러오는 중…</div>
@@ -265,46 +214,52 @@
     </div>
 
     <script>
-    const ALLOWED = ['glb', 'obj', 'mtl', 'jpg', 'jpeg', 'png', 'webp'];
-    const dropzone = document.getElementById('dropzone');
-    const fileInput = document.getElementById('file-input');
-    const selectedEl = document.getElementById('selected-files');
-    const submitBtn = document.getElementById('submit-btn');
-    const fileListEl = document.getElementById('file-list');
-    const fileCountEl = document.getElementById('file-count');
-    const alertEl = document.getElementById('alert');
-    const progressEl = document.getElementById('upload-progress');
-    const progressBar = progressEl.querySelector('.bar');
-    const form = document.getElementById('upload-form');
+    const base = new URL('.', location.href).href;
 
-    let pendingFiles = [];
+    function resolveUrl(path) {
+        return new URL(path, base).href;
+    }
 
-    function showAlert(msg, type = 'success') {
-        alertEl.textContent = msg;
-        alertEl.className = `alert alert-${type} show`;
-        setTimeout(() => alertEl.classList.remove('show'), 5000);
+    function extOf(name) {
+        const i = name.lastIndexOf('.');
+        return i >= 0 ? name.slice(i + 1).toLowerCase() : '';
     }
 
     function extBadge(ext) {
-        const cls = `badge badge-${ext}`;
-        return `<span class="${cls}">${ext}</span>`;
+        const known = ['glb', 'obj', 'mtl', 'jpg', 'jpeg', 'png', 'webp'];
+        const map = { jpg: 'jpeg' };
+        const cls = known.includes(ext) ? (map[ext] || ext) : 'unknown';
+        return `<span class="badge badge-${cls}">${escapeHtml(ext || '?')}</span>`;
     }
 
-    function renderFileList(files) {
-        fileCountEl.textContent = files.length ? `총 ${files.length}개` : '';
+    function escapeHtml(str) {
+        const d = document.createElement('div');
+        d.textContent = str;
+        return d.innerHTML;
+    }
 
-        if (!files.length) {
-            fileListEl.innerHTML = '<div class="empty-state">업로드된 파일이 없습니다.</div>';
+    function formatBytes(n) {
+        if (n < 1024) return n + ' B';
+        if (n < 1048576) return (n / 1024).toFixed(1) + ' KB';
+        return (n / 1048576).toFixed(1) + ' MB';
+    }
+
+    function renderTable(rows, sourceLabel) {
+        const fileListEl = document.getElementById('file-list');
+        const sourceEl = document.getElementById('list-source');
+        sourceEl.textContent = sourceLabel;
+
+        if (!rows.length) {
+            fileListEl.innerHTML = '<div class="empty-state">표시할 파일이 없습니다. catalog.json 을 확인하세요.</div>';
             return;
         }
 
-        const rows = files.map(f => `
+        const body = rows.map((r) => `
             <tr>
-                <td class="file-name">${escapeHtml(f.name)}</td>
-                <td>${extBadge(f.ext)}</td>
-                <td>${f.size_fmt}</td>
-                <td>${f.modified}</td>
-                <td><button class="btn btn-danger" data-delete="${escapeHtml(f.name)}">삭제</button></td>
+                <td class="file-name">${escapeHtml(r.name)}</td>
+                <td>${extBadge(r.ext)}</td>
+                <td>${r.sizeFmt}</td>
+                <td><a class="btn" href="${escapeHtml(r.rawUrl)}" target="_blank" rel="noopener">Raw</a></td>
             </tr>
         `).join('');
 
@@ -315,127 +270,92 @@
                         <th>파일명</th>
                         <th>형식</th>
                         <th>크기</th>
-                        <th>수정일</th>
                         <th></th>
                     </tr>
                 </thead>
-                <tbody>${rows}</tbody>
+                <tbody>${body}</tbody>
             </table>
         `;
-
-        fileListEl.querySelectorAll('[data-delete]').forEach(btn => {
-            btn.addEventListener('click', () => deleteFile(btn.dataset.delete));
-        });
     }
 
-    function escapeHtml(str) {
-        const d = document.createElement('div');
-        d.textContent = str;
-        return d.innerHTML;
-    }
-
-    async function loadFiles() {
+    async function headSize(url) {
         try {
-            const res = await fetch('upload.php?action=list');
-            const data = await res.json();
-            if (data.ok) renderFileList(data.files);
-        } catch {
-            fileListEl.innerHTML = '<div class="empty-state">목록을 불러올 수 없습니다.</div>';
-        }
+            const res = await fetch(url, { method: 'HEAD' });
+            const cl = res.headers.get('Content-Length');
+            if (cl) return parseInt(cl, 10);
+        } catch (_) {}
+        return null;
     }
 
-    function setPendingFiles(files) {
-        pendingFiles = [...files].filter(f => {
-            const ext = f.name.split('.').pop().toLowerCase();
-            return ALLOWED.includes(ext);
-        });
-
-        if (pendingFiles.length) {
-            selectedEl.textContent = pendingFiles.map(f => f.name).join(', ');
-            submitBtn.disabled = false;
-        } else {
-            selectedEl.textContent = files.length ? '허용되지 않는 파일 형식입니다.' : '';
-            submitBtn.disabled = true;
+    async function loadFromCatalog() {
+        const res = await fetch(resolveUrl('catalog.json'));
+        if (!res.ok) throw new Error('catalog.json 없음');
+        const data = await res.json();
+        const names = data.allFiles || [];
+        const rows = [];
+        for (const name of names) {
+            const ext = extOf(name);
+            const rawUrl = resolveUrl('assets/' + name);
+            let size = await headSize(rawUrl);
+            let sizeFmt = size != null ? formatBytes(size) : '—';
+            rows.push({ name, ext, sizeFmt, rawUrl });
         }
+        return rows;
     }
 
-    dropzone.addEventListener('click', () => fileInput.click());
+    async function loadFromGithub(cfg) {
+        const { owner, repo, branch, assetsPath } = cfg;
+        const api = `https://api.github.com/repos/${owner}/${repo}/contents/${encodeURIComponent(assetsPath).replace(/%2F/g, '/')}`;
+        const res = await fetch(api, { headers: { Accept: 'application/vnd.github+json' } });
+        if (!res.ok) throw new Error('GitHub API: ' + res.status);
+        const items = await res.json();
+        if (!Array.isArray(items)) throw new Error('GitHub 응답 형식 오류');
 
-    dropzone.addEventListener('dragover', e => {
-        e.preventDefault();
-        dropzone.classList.add('dragover');
-    });
-
-    dropzone.addEventListener('dragleave', () => dropzone.classList.remove('dragover'));
-
-    dropzone.addEventListener('drop', e => {
-        e.preventDefault();
-        dropzone.classList.remove('dragover');
-        setPendingFiles(e.dataTransfer.files);
-    });
-
-    fileInput.addEventListener('change', () => setPendingFiles(fileInput.files));
-
-    form.addEventListener('submit', async e => {
-        e.preventDefault();
-        if (!pendingFiles.length) return;
-
-        const fd = new FormData();
-        pendingFiles.forEach(f => fd.append('files[]', f));
-
-        submitBtn.disabled = true;
-        progressEl.style.display = 'block';
-        progressBar.style.width = '30%';
-
-        try {
-            const res = await fetch('upload.php?action=upload', { method: 'POST', body: fd });
-            const data = await res.json();
-            progressBar.style.width = '100%';
-
-            if (data.ok) {
-                const names = data.uploaded.join(', ');
-                showAlert(`${data.uploaded.length}개 파일 업로드 완료: ${names}`);
-                if (data.errors?.length) showAlert(data.errors.join('\n'), 'error');
-                renderFileList(data.files);
-                pendingFiles = [];
-                selectedEl.textContent = '';
-                fileInput.value = '';
-            } else {
-                showAlert(data.errors?.join('\n') || data.error || '업로드 실패', 'error');
-            }
-        } catch {
-            showAlert('업로드 중 오류가 발생했습니다.', 'error');
-        } finally {
-            submitBtn.disabled = pendingFiles.length === 0;
-            setTimeout(() => {
-                progressEl.style.display = 'none';
-                progressBar.style.width = '0%';
-            }, 600);
-        }
-    });
-
-    async function deleteFile(name) {
-        if (!confirm(`"${name}" 파일을 삭제하시겠습니까?`)) return;
-
-        try {
-            const res = await fetch('upload.php?action=delete', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ name }),
+        const allowed = ['glb', 'obj', 'mtl', 'jpg', 'jpeg', 'png', 'webp'];
+        const rows = [];
+        for (const it of items) {
+            if (it.type !== 'file') continue;
+            const name = it.name;
+            const ext = extOf(name);
+            if (!allowed.includes(ext)) continue;
+            const rawUrl = `https://raw.githubusercontent.com/${owner}/${repo}/${branch}/${assetsPath}/${name}`;
+            const size = it.size;
+            rows.push({
+                name,
+                ext,
+                sizeFmt: size != null ? formatBytes(size) : '—',
+                rawUrl,
             });
-            const data = await res.json();
-            if (data.ok) {
-                showAlert(`"${name}" 삭제 완료`);
-                renderFileList(data.files);
-            } else {
-                showAlert(data.error || '삭제 실패', 'error');
+        }
+        rows.sort((a, b) => a.name.localeCompare(b.name));
+        return rows;
+    }
+
+    async function main() {
+        const gh = window.OBJ_SITE?.github;
+        try {
+            if (gh && gh.enabled && gh.owner && gh.repo) {
+                const rows = await loadFromGithub(gh);
+                renderTable(rows, `GitHub API · ${gh.owner}/${gh.repo}`);
+                return;
             }
-        } catch {
-            showAlert('삭제 중 오류가 발생했습니다.', 'error');
+        } catch (e) {
+            console.warn(e);
+            document.getElementById('list-source').textContent =
+                'GitHub API 실패 → catalog.json 사용 (' + (e.message || e) + ')';
+        }
+
+        try {
+            const rows = await loadFromCatalog();
+            renderTable(rows, 'catalog.json + HEAD 요청');
+        } catch (e) {
+            document.getElementById('file-list').innerHTML =
+                '<div class="empty-state">목록을 불러올 수 없습니다: ' + escapeHtml(String(e.message || e)) + '</div>';
+            document.getElementById('list-source').textContent = '오류';
         }
     }
 
-    loadFiles();
+    main();
     </script>
 </body>
 </html>
