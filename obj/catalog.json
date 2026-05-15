@@ -1,0 +1,23 @@
+{
+  "models": [
+    {
+      "id": "glb",
+      "label": "GLB (bon260515)",
+      "type": "glb",
+      "path": "assets/bon260515.glb"
+    },
+    {
+      "id": "obj",
+      "label": "OBJ (bon002789)",
+      "type": "obj",
+      "path": "assets/bon002789-000-30000.obj",
+      "mtl": "assets/bon002789-000-30000.mtl"
+    }
+  ],
+  "allFiles": [
+    "bon260515.glb",
+    "bon002789-000-30000.jpg",
+    "bon002789-000-30000.mtl",
+    "bon002789-000-30000.obj"
+  ]
+}
