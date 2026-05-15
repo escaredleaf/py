@@ -16,7 +16,7 @@
             padding: 32px 20px 48px;
         }
 
-        .container { max-width: 860px; margin: 0 auto; }
+        .container { max-width: 1024px; margin: 0 auto; }
 
         header { margin-bottom: 28px; }
 
@@ -114,6 +114,43 @@
             font-size: 12px;
             word-break: break-all;
         }
+
+        .file-name a {
+            color: #8ab4f8;
+            text-decoration: none;
+        }
+
+        .file-name a:hover { text-decoration: underline; }
+
+        .url-cell { font-size: 11px; line-height: 1.55; }
+
+        .url-row {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: baseline;
+            gap: 6px;
+            margin-bottom: 6px;
+        }
+
+        .url-row:last-child { margin-bottom: 0; }
+
+        .url-label {
+            flex-shrink: 0;
+            font-size: 10px;
+            font-weight: 600;
+            color: #9aa0a6;
+            text-transform: uppercase;
+            min-width: 42px;
+        }
+
+        .url-link {
+            font-family: "SF Mono", Menlo, monospace;
+            color: #8ab4f8;
+            word-break: break-all;
+            text-decoration: none;
+        }
+
+        .url-link:hover { text-decoration: underline; }
 
         .badge {
             display: inline-block;
@@ -214,10 +251,28 @@
     </div>
 
     <script>
-    const base = new URL('.', location.href).href;
+    const base = new URL('./', location.href).href;
 
     function resolveUrl(path) {
         return new URL(path, base).href;
+    }
+
+    function getPagesUrl(name) {
+        const pagesBase = window.OBJ_SITE?.pages?.baseUrl;
+        if (pagesBase) {
+            return pagesBase.replace(/\/$/, '') + '/assets/' + encodeURIComponent(name).replace(/%2F/g, '/');
+        }
+        return resolveUrl('assets/' + name);
+    }
+
+    function getRawUrl(name) {
+        const gh = window.OBJ_SITE?.github;
+        if (gh?.owner && gh.owner !== 'YOUR_GITHUB_USER' && gh.repo) {
+            const branch = gh.branch || 'main';
+            const path = (gh.assetsPath || 'obj/assets').replace(/\/$/, '');
+            return `https://raw.githubusercontent.com/${gh.owner}/${gh.repo}/${branch}/${path}/${name}`;
+        }
+        return resolveUrl('assets/' + name);
     }
 
     function extOf(name) {
@@ -256,10 +311,21 @@
 
         const body = rows.map((r) => `
             <tr>
-                <td class="file-name">${escapeHtml(r.name)}</td>
+                <td class="file-name">
+                    <a href="${escapeHtml(r.pagesUrl)}" target="_blank" rel="noopener">${escapeHtml(r.name)}</a>
+                </td>
                 <td>${extBadge(r.ext)}</td>
                 <td>${r.sizeFmt}</td>
-                <td><a class="btn" href="${escapeHtml(r.rawUrl)}" target="_blank" rel="noopener">Raw</a></td>
+                <td class="url-cell">
+                    <div class="url-row">
+                        <span class="url-label">Pages</span>
+                        <a class="url-link" href="${escapeHtml(r.pagesUrl)}" target="_blank" rel="noopener">${escapeHtml(r.pagesUrl)}</a>
+                    </div>
+                    <div class="url-row">
+                        <span class="url-label">Raw</span>
+                        <a class="url-link" href="${escapeHtml(r.rawUrl)}" target="_blank" rel="noopener">${escapeHtml(r.rawUrl)}</a>
+                    </div>
+                </td>
             </tr>
         `).join('');
 
@@ -270,7 +336,7 @@
                         <th>파일명</th>
                         <th>형식</th>
                         <th>크기</th>
-                        <th></th>
+                        <th>링크 주소</th>
                     </tr>
                 </thead>
                 <tbody>${body}</tbody>
@@ -295,10 +361,11 @@
         const rows = [];
         for (const name of names) {
             const ext = extOf(name);
-            const rawUrl = resolveUrl('assets/' + name);
-            let size = await headSize(rawUrl);
+            const pagesUrl = getPagesUrl(name);
+            const rawUrl = getRawUrl(name);
+            let size = await headSize(pagesUrl);
             let sizeFmt = size != null ? formatBytes(size) : '—';
-            rows.push({ name, ext, sizeFmt, rawUrl });
+            rows.push({ name, ext, sizeFmt, pagesUrl, rawUrl });
         }
         return rows;
     }
@@ -318,12 +385,14 @@
             const name = it.name;
             const ext = extOf(name);
             if (!allowed.includes(ext)) continue;
+            const pagesUrl = getPagesUrl(name);
             const rawUrl = `https://raw.githubusercontent.com/${owner}/${repo}/${branch}/${assetsPath}/${name}`;
             const size = it.size;
             rows.push({
                 name,
                 ext,
                 sizeFmt: size != null ? formatBytes(size) : '—',
+                pagesUrl,
                 rawUrl,
             });
         }

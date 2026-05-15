@@ -4,9 +4,13 @@
  * (공개 저장소만 브라우저에서 인증 없이 조회 가능, API 분당 요청 한도 있음)
  */
 window.OBJ_SITE = {
+  /** GitHub Pages에서 obj/ 가 배포된 기준 URL (끝에 슬래시 없음) */
+  pages: {
+    baseUrl: 'https://escaredleaf.github.io/py/obj'
+  },
   github: {
     enabled: false,
-    owner: 'YOUR_GITHUB_USER',
+    owner: 'escaredleaf',
     repo: 'py',
     branch: 'main',
     assetsPath: 'obj/assets'
