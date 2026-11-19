@@ -2425,7 +2425,7 @@ window.__DG_PLAN="A";
   function mount(){ [].forEach.call(document.querySelectorAll('header.top > .logo'),one); }
   function one(lg){ if(lg.parentNode.querySelector('.dg-abs')) return;
     var d=document.createElement('div'); d.className='dg-abs'; d.innerHTML='<a href="plan-a.html" data-p="A">A안</a><a href="plan-b.html" data-p="B">B안</a>';
-    [].forEach.call(d.querySelectorAll('a'),function(a){ if(a.dataset.p===CUR){ a.className='on'; a.removeAttribute('href'); } }); lg.insertAdjacentElement('afterend',d); }
+    [].forEach.call(d.querySelectorAll('a'),function(a){ if(a.dataset.p===CUR){ a.className='on'; a.href='#'; a.addEventListener('click',function(e){ e.preventDefault(); location.reload(); }); } }); lg.insertAdjacentElement('afterend',d); }
   mount(); new MutationObserver(mount).observe(document.documentElement,{childList:true,subtree:true}); })();
 </script>
 </body>
