@@ -2418,6 +2418,15 @@ html.dg-swing .il .top .ham{display:none!important}
     var bk=d.getElementById('mkBack'); if(bk&&bk.offsetParent) bk.click(); var mn=d.getElementById('main'); if(mn) mn.scrollTop=0; },true);
   var st=document.createElement('style'); st.textContent='.top .logo{cursor:pointer}'; document.head.appendChild(st);
 })();;(function(){ var s=document.createElement('style'); s.textContent='html body .il .top{height:44px!important;min-height:44px!important;padding-top:0!important;padding-bottom:0!important}html body .il .top .logo{font-size:19px!important}html body .il .top .dg-sess{font-size:12.5px!important}'; document.head.appendChild(s); })();
+
+window.__DG_PLAN="A";
+(function(){ var CUR=window.__DG_PLAN||'A';
+  var css=document.createElement('style'); css.textContent='.dg-abs{display:inline-flex;align-items:center;gap:2px;margin-left:12px;padding:2px;border-radius:8px;background:#EEF1F6;flex:none}.dg-abs a{display:inline-flex;align-items:center;height:26px;padding:0 12px;border-radius:6px;font-size:12.5px;font-weight:700;color:#8A93A5;text-decoration:none;line-height:1}.dg-abs a.on{background:#fff;color:#2F5BE0;box-shadow:0 1px 2px rgba(16,24,40,.12)}.dg-abs a:not(.on):hover{color:#1F2430}'; document.head.appendChild(css);
+  function mount(){ [].forEach.call(document.querySelectorAll('header.top > .logo'),one); }
+  function one(lg){ if(lg.parentNode.querySelector('.dg-abs')) return;
+    var d=document.createElement('div'); d.className='dg-abs'; d.innerHTML='<a href="plan-a.html" data-p="A">A안</a><a href="plan-b.html" data-p="B">B안</a>';
+    [].forEach.call(d.querySelectorAll('a'),function(a){ if(a.dataset.p===CUR){ a.className='on'; a.removeAttribute('href'); } }); lg.insertAdjacentElement('afterend',d); }
+  mount(); new MutationObserver(mount).observe(document.documentElement,{childList:true,subtree:true}); })();
 </script>
 </body>
 </html>
